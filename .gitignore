@@ -13,5 +13,11 @@ capture/.build/
 # Session handoff files
 SESSION-HANDOFF_*.md
 
+# Python package artifacts
+*.egg-info/
+__pycache__/
+dist/
+build/
+
 # macOS
 .DS_Store

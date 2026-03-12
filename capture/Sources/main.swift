@@ -97,7 +97,7 @@ class AudioRecorder: NSObject, SCStreamOutput {
                 forWriting: URL(fileURLWithPath: path),
                 settings: settings,
                 commonFormat: f.commonFormat,
-                interleaved: false
+                interleaved: f.isInterleaved
             )
         } catch {
             fputs("Error creating \(path): \(error)\n", stderr)
@@ -108,8 +108,22 @@ class AudioRecorder: NSObject, SCStreamOutput {
         guard let f = fmt,
               let pcm = AVAudioPCMBuffer(pcmFormat: f, frameCapacity: frames) else { return }
         pcm.frameLength = frames
-        data.withUnsafeBytes { buf in
-            memcpy(pcm.mutableAudioBufferList.pointee.mBuffers.mData!, buf.baseAddress!, data.count)
+
+        data.withUnsafeBytes { rawBuf in
+            let buffers = UnsafeMutableAudioBufferListPointer(pcm.mutableAudioBufferList)
+            if f.isInterleaved || buffers.count <= 1 {
+                // Interleaved or mono: single contiguous copy
+                let size = min(data.count, Int(buffers[0].mDataByteSize))
+                memcpy(buffers[0].mData!, rawBuf.baseAddress!, size)
+            } else {
+                // Non-interleaved: split data across per-channel buffers
+                let bytesPerChannel = data.count / Int(buffers.count)
+                for ch in 0..<buffers.count {
+                    let src = rawBuf.baseAddress!.advanced(by: ch * bytesPerChannel)
+                    let size = min(bytesPerChannel, Int(buffers[ch].mDataByteSize))
+                    memcpy(buffers[ch].mData!, src, size)
+                }
+            }
         }
         try? audioFile?.write(from: pcm)
     }
@@ -140,29 +154,33 @@ class AudioRecorder: NSObject, SCStreamOutput {
               let desc = sampleBuffer.formatDescription,
               let asbd = desc.audioStreamBasicDescription else { return }
 
+        // Use numSamples for correct frame count (not dataLength / bytesPerFrame,
+        // which is wrong for non-interleaved multi-channel audio)
+        let numFrames = CMSampleBufferGetNumSamples(sampleBuffer)
+        guard numFrames > 0 else { return }
+
         if !started {
             rate = asbd.mSampleRate
             channels = asbd.mChannelsPerFrame
+            let nonInterleaved = asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved != 0
             fmt = AVAudioFormat(
                 commonFormat: asbd.mFormatFlags & kAudioFormatFlagIsFloat != 0
                     ? .pcmFormatFloat32 : .pcmFormatInt16,
                 sampleRate: rate,
                 channels: AVAudioChannelCount(channels),
-                interleaved: false
+                interleaved: !nonInterleaved
             )
             started = true
-            fputs("Audio: \(Int(rate)) Hz, \(channels) ch\n", stderr)
+            fputs("Audio: \(Int(rate)) Hz, \(channels) ch, \(nonInterleaved ? "non-interleaved" : "interleaved")\n", stderr)
             openFile(at: chunkPath(chunkIndex))
         }
 
         guard let block = sampleBuffer.dataBuffer else { return }
         let len = block.dataLength
-        let bpf = Int(asbd.mBytesPerFrame)
-        guard bpf > 0 else { return }
-        let frames = UInt32(len / bpf)
+        let frames = UInt32(numFrames)
 
         var data = Data(count: len)
-        data.withUnsafeMutableBytes { buf in
+        _ = data.withUnsafeMutableBytes { buf in
             CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: len, destination: buf.baseAddress!)
         }
 
@@ -220,14 +238,25 @@ func stopOnce(cancel: Bool = false) {
     }
 }
 
-// SIGINT handler — set up before any async work
-signal(SIGINT, SIG_IGN)
-let sigSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
-sigSource.setEventHandler {
+// SIGINT handler — use sigwait on a dedicated thread for reliability.
+// The old pattern (signal(SIGINT, SIG_IGN) + DispatchSource) fails when
+// the parent process has SIG_IGN because the kernel discards the signal
+// before it reaches the kqueue-based dispatch source.
+// sigprocmask(SIG_BLOCK) queues the signal instead of discarding it,
+// and sigwait() atomically retrieves pending blocked signals.
+var sigintSet = sigset_t()
+sigemptyset(&sigintSet)
+sigaddset(&sigintSet, SIGINT)
+sigprocmask(SIG_BLOCK, &sigintSet, nil)
+// Reset disposition from SIG_IGN to SIG_DFL (safe — signal is blocked)
+signal(SIGINT, SIG_DFL)
+
+Thread.detachNewThread {
+    var sig: Int32 = 0
+    sigwait(&sigintSet, &sig)
     fputs("\nCancelled.\n", stderr)
     stopOnce(cancel: true)
 }
-sigSource.resume()
 
 // Enter key handler
 Thread.detachNewThread {

@@ -1,0 +1,18 @@
+[project]
+name = "scribe-md"
+version = "0.1.0"
+description = "Transcribe system audio and YouTube videos to Markdown"
+requires-python = ">=3.12"
+dependencies = [
+    "typer>=0.9",
+    "mlx-whisper",
+    "yt-dlp",
+    "rich",
+]
+
+[project.scripts]
+scribe-md = "scribe_md.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

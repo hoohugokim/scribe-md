@@ -7,10 +7,11 @@ version = "0.1.0"
 
 [tasks]
 build-capture = { cmd = "cd capture && swift build -c release", description = "Build the Swift audio capture CLI" }
-transcribe = { cmd = "python transcribe.py", description = "Run transcription on a WAV file", depends-on = ["build-capture"] }
+sm = { cmd = "scribe-md", description = "Run scribe-md CLI" }
 
 [dependencies]
 python = ">=3.12,<3.14"
+ffmpeg = ">=7"
 
 [pypi-dependencies]
-mlx-whisper = "*"
+scribe-md = { path = ".", editable = true }

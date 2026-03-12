@@ -1,0 +1,393 @@
+"""scribe-md CLI: Transcribe system audio and YouTube videos to Markdown."""
+
+import json
+import signal
+import tempfile
+from pathlib import Path
+from typing import Optional
+
+import typer
+from rich.console import Console
+
+from . import audio, capture, downloader, merger, transcriber
+from .utils import log, sanitize_filename
+
+app = typer.Typer(
+    name="scribe-md",
+    help="Transcribe system audio and YouTube videos to Markdown.",
+    no_args_is_help=True,
+)
+console = Console(stderr=True)
+
+
+# ---------------------------------------------------------------------------
+# Shared transcription pipeline
+# ---------------------------------------------------------------------------
+
+
+def _transcribe_single(
+    audio_path: Path,
+    output: Path,
+    model: str,
+    language: str | None,
+    timestamps: bool,
+) -> None:
+    """Transcribe a single audio file and write Markdown output."""
+    if audio.is_silent(audio_path):
+        log(f"Skipping {audio_path.name}: audio is silent")
+        return
+
+    result = transcriber.transcribe_audio(audio_path, model=model, language=language)
+    segments = transcriber.extract_segments(result)
+
+    if not segments:
+        log(f"Skipping {audio_path.name}: no speech detected")
+        return
+
+    text = merger.merge_segments([segments], chunk_duration=0, overlap=0, timestamps=timestamps)
+    output.write_text(text, encoding="utf-8")
+    log(f"Wrote {output}")
+
+
+def _transcribe_chunked(
+    audio_path: Path,
+    output: Path,
+    model: str,
+    language: str | None,
+    timestamps: bool,
+    chunk_seconds: float,
+    overlap_seconds: float,
+) -> None:
+    """Split a long audio file into chunks, transcribe each, and merge."""
+    with tempfile.TemporaryDirectory(prefix="scribe-md-chunks-") as tmp:
+        tmp_dir = Path(tmp)
+
+        log(f"Splitting into {chunk_seconds}s chunks...")
+        chunks = audio.split_audio(audio_path, tmp_dir, chunk_seconds, overlap_seconds)
+
+        all_segments: list[list[dict]] = []
+        for i, chunk_path in enumerate(chunks):
+            console.print(f"  Transcribing chunk {i + 1}/{len(chunks)}...")
+            if audio.is_silent(chunk_path):
+                log(f"  Chunk {i}: silent, skipping")
+                all_segments.append([])
+                continue
+            result = transcriber.transcribe_audio(chunk_path, model=model, language=language)
+            all_segments.append(transcriber.extract_segments(result))
+
+        text = merger.merge_segments(
+            all_segments,
+            chunk_duration=chunk_seconds,
+            overlap=overlap_seconds,
+            timestamps=timestamps,
+        )
+        output.write_text(text, encoding="utf-8")
+        log(f"Wrote {output} ({len(chunks)} chunks merged)")
+
+
+# ---------------------------------------------------------------------------
+# scribe-md file
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def file(
+    audio_file: Path = typer.Argument(..., help="Path to audio file (WAV, MP3, etc.)"),
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output markdown path"),
+    language: Optional[str] = typer.Option(None, "--language", "-l", help="Language code (en, ko, etc.)"),
+    model: str = typer.Option(
+        "mlx-community/whisper-large-v3-mlx", "--model", "-m", help="Whisper model",
+    ),
+    timestamps: bool = typer.Option(True, "--timestamps/--no-timestamps", "-t/-T", help="Include timestamps"),
+    chunk_seconds: float = typer.Option(
+        1800, "--chunk-seconds", help="Chunk duration for long files (seconds)",
+    ),
+    overlap_seconds: float = typer.Option(5, "--overlap-seconds", help="Overlap between chunks"),
+) -> None:
+    """Transcribe an existing audio file to Markdown."""
+    if not audio_file.exists():
+        console.print(f"[red]Error:[/red] {audio_file} not found")
+        raise typer.Exit(1)
+
+    out = output or audio_file.with_suffix(".md")
+
+    with tempfile.TemporaryDirectory(prefix="scribe-md-") as tmp:
+        # Convert to 16kHz mono WAV
+        converted = Path(tmp) / "converted.wav"
+        log("Converting to 16kHz mono...")
+        audio.convert_to_16k_mono(audio_file, converted)
+
+        duration = audio.get_duration(converted)
+        if duration > chunk_seconds:
+            _transcribe_chunked(
+                converted, out, model, language, timestamps,
+                chunk_seconds, overlap_seconds,
+            )
+        else:
+            _transcribe_single(converted, out, model, language, timestamps)
+
+
+# ---------------------------------------------------------------------------
+# scribe-md url
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def url(
+    video_url: str = typer.Argument(..., help="YouTube URL or playlist URL"),
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output markdown path"),
+    language: Optional[str] = typer.Option(None, "--language", "-l", help="Language code (en, ko, etc.)"),
+    model: str = typer.Option(
+        "mlx-community/whisper-large-v3-mlx", "--model", "-m", help="Whisper model",
+    ),
+    timestamps: bool = typer.Option(True, "--timestamps/--no-timestamps", "-t/-T", help="Include timestamps"),
+    chunk_seconds: float = typer.Option(
+        1800, "--chunk-seconds", help="Chunk duration for long videos (seconds)",
+    ),
+    overlap_seconds: float = typer.Option(5, "--overlap-seconds", help="Overlap between chunks"),
+) -> None:
+    """Transcribe audio from a YouTube URL to Markdown."""
+    # Check if this is a playlist
+    if downloader.is_playlist(video_url):
+        entries = downloader.get_playlist_entries(video_url)
+        log(f"Playlist with {len(entries)} videos")
+
+        for i, entry in enumerate(entries):
+            entry_url = entry.get("url") or entry.get("webpage_url", "")
+            entry_title = entry.get("title", f"video_{i}")
+            log(f"\n[{i + 1}/{len(entries)}] {entry_title}")
+
+            try:
+                _transcribe_url(
+                    entry_url, output=None, model=model, language=language,
+                    timestamps=timestamps, chunk_seconds=chunk_seconds,
+                    overlap_seconds=overlap_seconds,
+                )
+            except Exception as e:
+                console.print(f"[yellow]Skipping: {e}[/yellow]")
+    else:
+        _transcribe_url(
+            video_url, output=output, model=model, language=language,
+            timestamps=timestamps, chunk_seconds=chunk_seconds,
+            overlap_seconds=overlap_seconds,
+        )
+
+
+def _transcribe_url(
+    video_url: str,
+    output: Path | None,
+    model: str,
+    language: str | None,
+    timestamps: bool,
+    chunk_seconds: float,
+    overlap_seconds: float,
+) -> None:
+    """Download and transcribe a single video URL."""
+    with tempfile.TemporaryDirectory(prefix="scribe-md-dl-") as tmp:
+        tmp_dir = Path(tmp)
+
+        # Download audio
+        raw_audio, title = downloader.download_audio(video_url, tmp_dir)
+
+        # Convert to 16kHz mono
+        converted = tmp_dir / "converted.wav"
+        log("Converting to 16kHz mono...")
+        audio.convert_to_16k_mono(raw_audio, converted)
+
+        # Determine output path
+        out = output or Path(f"{sanitize_filename(title)}.md")
+
+        duration = audio.get_duration(converted)
+        log(f"Duration: {duration / 60:.1f} min")
+
+        if duration > chunk_seconds:
+            _transcribe_chunked(
+                converted, out, model, language, timestamps,
+                chunk_seconds, overlap_seconds,
+            )
+        else:
+            _transcribe_single(converted, out, model, language, timestamps)
+
+
+# ---------------------------------------------------------------------------
+# scribe-md live
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def live(
+    output: Path = typer.Option(Path("transcription.md"), "--output", "-o", help="Output markdown path"),
+    duration: Optional[float] = typer.Option(None, "--duration", "-d", help="Recording duration (seconds)"),
+    language: Optional[str] = typer.Option(None, "--language", "-l", help="Language code (en, ko, etc.)"),
+    model: str = typer.Option(
+        "mlx-community/whisper-large-v3-mlx", "--model", "-m", help="Whisper model",
+    ),
+    timestamps: bool = typer.Option(False, "--timestamps/--no-timestamps", "-t/-T", help="Include timestamps"),
+    chunk_seconds: float = typer.Option(
+        0, "--chunk-seconds", help="Enable chunked pipeline (transcribe every N seconds)",
+    ),
+    overlap_seconds: float = typer.Option(5, "--overlap-seconds", help="Overlap between chunks"),
+    keep_audio: bool = typer.Option(False, "--keep-audio", help="Keep intermediate WAV files"),
+) -> None:
+    """Capture and transcribe system audio in real-time."""
+    if chunk_seconds > 0:
+        _live_chunked(
+            output, duration, language, model, timestamps,
+            chunk_seconds, overlap_seconds, keep_audio,
+        )
+    else:
+        _live_single(output, duration, language, model, timestamps, keep_audio)
+
+
+def _live_single(
+    output: Path,
+    duration: float | None,
+    language: str | None,
+    model: str,
+    timestamps: bool,
+    keep_audio: bool,
+) -> None:
+    """Single-file live capture pipeline."""
+    with tempfile.TemporaryDirectory(prefix="scribe-md-live-") as tmp:
+        tmp_dir = Path(tmp)
+        raw_wav = tmp_dir / "recording.wav"
+
+        proc = capture.run_capture(raw_wav, duration=duration)
+
+        # Let Ctrl+C propagate to the capture subprocess
+        original_sigint = signal.getsignal(signal.SIGINT)
+        cancelled = False
+
+        def _handle_sigint(signum, frame):
+            nonlocal cancelled
+            cancelled = True
+            if proc.poll() is None:
+                proc.send_signal(signal.SIGINT)
+
+        signal.signal(signal.SIGINT, _handle_sigint)
+
+        try:
+            proc.wait()
+        finally:
+            signal.signal(signal.SIGINT, original_sigint)
+
+        if cancelled or proc.returncode != 0:
+            log("Recording cancelled.")
+            raise typer.Exit(1)
+
+        if not raw_wav.exists() or raw_wav.stat().st_size == 0:
+            log("No audio recorded.")
+            raise typer.Exit(1)
+
+        # Convert and transcribe
+        converted = tmp_dir / "converted.wav"
+        log("Converting to 16kHz mono...")
+        audio.convert_to_16k_mono(raw_wav, converted)
+        _transcribe_single(converted, output, model, language, timestamps)
+
+        if keep_audio:
+            import shutil
+            saved = Path(f"recording_{output.stem}.wav")
+            shutil.copy2(converted, saved)
+            log(f"Audio saved: {saved}")
+
+
+def _live_chunked(
+    output: Path,
+    duration: float | None,
+    language: str | None,
+    model: str,
+    timestamps: bool,
+    chunk_seconds: float,
+    overlap_seconds: float,
+    keep_audio: bool,
+) -> None:
+    """Chunked live capture pipeline with concurrent transcription."""
+    with tempfile.TemporaryDirectory(prefix="scribe-md-chunks-") as tmp:
+        tmp_dir = Path(tmp)
+        chunk_base = tmp_dir / "chunk.wav"
+
+        proc = capture.run_capture(
+            chunk_base, duration=duration,
+            chunk_seconds=chunk_seconds, overlap_seconds=overlap_seconds,
+        )
+
+        # Handle Ctrl+C: let capture finish current chunk
+        original_sigint = signal.getsignal(signal.SIGINT)
+        cancelled = False
+
+        def _handle_sigint(signum, frame):
+            nonlocal cancelled
+            cancelled = True
+            if proc.poll() is None:
+                proc.send_signal(signal.SIGINT)
+
+        signal.signal(signal.SIGINT, _handle_sigint)
+
+        chunk_jsons: list[Path] = []
+        chunk_idx = 0
+
+        try:
+            # Read chunk paths from capture's stdout
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                chunk_raw = Path(line.decode().strip())
+                if not chunk_raw.exists():
+                    continue
+
+                idx_str = f"{chunk_idx:03d}"
+                chunk_16k = tmp_dir / f"chunk_{idx_str}_16k.wav"
+                chunk_json = tmp_dir / f"chunk_{idx_str}.json"
+
+                log(f"Chunk {chunk_idx}: processing...")
+                try:
+                    audio.convert_to_16k_mono(chunk_raw, chunk_16k)
+                    if audio.is_silent(chunk_16k):
+                        log(f"  Chunk {chunk_idx}: silent, skipping")
+                        chunk_idx += 1
+                        continue
+                    result = transcriber.transcribe_audio(
+                        chunk_16k, model=model, language=language,
+                    )
+                    segments = transcriber.extract_segments(result)
+                    data = {"chunk_index": chunk_idx, "segments": segments}
+                    chunk_json.write_text(
+                        json.dumps(data, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                    chunk_jsons.append(chunk_json)
+                except Exception as e:
+                    log(f"Chunk {chunk_idx} failed: {e}")
+
+                chunk_idx += 1
+
+            proc.wait()
+        finally:
+            signal.signal(signal.SIGINT, original_sigint)
+
+        if not chunk_jsons:
+            log("No chunks were transcribed.")
+            raise typer.Exit(1)
+
+        # Merge all chunks
+        all_segments: list[list[dict]] = []
+        for cj in sorted(chunk_jsons):
+            data = json.loads(cj.read_text(encoding="utf-8"))
+            all_segments.append(data.get("segments", []))
+
+        text = merger.merge_segments(
+            all_segments,
+            chunk_duration=chunk_seconds,
+            overlap=overlap_seconds,
+            timestamps=timestamps,
+        )
+        output.write_text(text, encoding="utf-8")
+        log(f"Done: {output} ({len(chunk_jsons)} chunks)")
+
+        if keep_audio:
+            log(f"Audio chunks saved: {tmp_dir}")
+            # Prevent cleanup by copying to a persistent location
+            import shutil
+            saved_dir = Path(f"chunks_{output.stem}")
+            shutil.copytree(tmp_dir, saved_dir)
+            log(f"Audio saved: {saved_dir}")

@@ -1,40 +1,50 @@
 # scribe-md — Development Plan
 
-## Current State (v0.1 — Working Prototype)
+## Current State (v0.2 — CLI App)
 
 ### What exists
-- **Swift CLI** (`capture/`): System-wide audio capture via ScreenCaptureKit → 48kHz stereo WAV, with chunked output and overlap buffer
-- **Python script** (`transcribe.py`): mlx-whisper transcription → Markdown, with JSON chunk format and overlap-aware merge
-- **Shell orchestrator** (`transcribe.sh`): Single-file and chunked (pipelined) modes, ffmpeg 48kHz→16kHz conversion
-- **Pixi** for Python + mlx-whisper dependency management
+- **Swift CLI** (`capture/`): System-wide audio capture via ScreenCaptureKit → 48kHz stereo WAV, with chunked output, overlap buffer, proper per-channel buffer handling, and reliable signal handling
+- **Python CLI** (`scribe_md/`): Typer-based CLI with three subcommands (`live`, `url`, `file`), mlx-whisper transcription, yt-dlp YouTube download, overlap-aware chunk merge, silence detection
+- **Pixi** for all dependencies: Python, mlx-whisper, ffmpeg, yt-dlp — portable to any Apple Silicon Mac via `git clone` + `pixi install`
 
-### Known issues
-1. **Ctrl+C unreliable** — `signal(SIGINT, SIG_IGN)` + DispatchSource pattern doesn't fire when the process inherits SIG_IGN from the parent shell. `trap : INT` fix was applied but not fully verified. Enter key works as the primary stop mechanism.
-2. **Audio buffer handling fragile** — Non-interleaved stereo PCM is copied with a single `memcpy` into the first audio buffer. Works by accident (contiguous memory layout of AVAudioPCMBuffer). Should use proper per-channel buffer handling.
-3. **Whisper hallucination on silence** — Silent or near-silent audio produces "자막제공자" (subtitle provider). No silence detection or filtering.
-4. **No per-app capture** — Original vision was per-app audio isolation. Currently captures all system audio.
+### Architecture
+```
+scribe-md/
+  capture/                    # Swift CLI (ScreenCaptureKit)
+    Package.swift
+    Sources/main.swift
+  scribe_md/                  # Python package (typer CLI)
+    __init__.py
+    cli.py                    # Subcommands: live, url, file
+    transcriber.py            # mlx-whisper transcription
+    merger.py                 # Chunk merge logic
+    audio.py                  # ffmpeg helpers, silence detection
+    downloader.py             # yt-dlp wrapper
+    capture.py                # Swift binary management
+    utils.py                  # Shared utilities
+  pyproject.toml              # Python package definition
+  pixi.toml                   # Dependency management
+```
 
 ---
 
-## Phase 1 — Stabilize Core (Bug Fixes + Reliability)
+## Phase 1 — Stabilize Core ~~(Bug Fixes + Reliability)~~ DONE
 
-### 1.1 Fix audio buffer handling
-- Detect interleaved vs non-interleaved from ASBD flags (`kAudioFormatFlagIsNonInterleaved`)
-- For non-interleaved: split CMBlockBuffer data into separate channel buffers using `UnsafeMutableAudioBufferListPointer`
-- Add format logging on first sample to confirm actual layout
-- Test: capture → afplay → verify clean audio
+### ~~1.1 Fix audio buffer handling~~ DONE
+- ~~Detect interleaved vs non-interleaved from ASBD flags (`kAudioFormatFlagIsNonInterleaved`)~~
+- ~~For non-interleaved: split CMBlockBuffer data into separate channel buffers using `UnsafeMutableAudioBufferListPointer`~~
+- ~~Add format logging on first sample to confirm actual layout~~
+- Frame count now uses `CMSampleBufferGetNumSamples()` instead of `dataLength / bytesPerFrame`
 
-### 1.2 Fix Ctrl+C signal handling
-- Replace `signal(SIGINT, SIG_IGN)` + DispatchSource with a blocking `sigwait()` on a dedicated thread (same pattern as Enter key handler)
-- Or: use `sigaction` with a C-level handler that sets an atomic flag, polled by a thread
-- Verify shell `trap : INT` allows child to receive SIGINT
-- Test: both Enter (graceful stop → transcribe) and Ctrl+C (cancel → no transcribe)
+### ~~1.2 Fix Ctrl+C signal handling~~ DONE
+- ~~Replace `signal(SIGINT, SIG_IGN)` + DispatchSource with `sigprocmask(SIG_BLOCK)` + `sigwait()` on a dedicated thread~~
+- Handles inherited SIG_IGN from parent by resetting to SIG_DFL after blocking
 
-### 1.3 Silence detection / hallucination guard
-- After ffmpeg conversion, check RMS energy of the 16kHz WAV
-- If below threshold (e.g., -50 dBFS), skip transcription and warn user
-- In chunked mode: skip silent chunks, don't produce empty JSON files
-- Consider using Whisper's `no_speech_threshold` parameter if mlx-whisper exposes it
+### ~~1.3 Silence detection / hallucination guard~~ DONE
+- ~~After ffmpeg conversion, check RMS energy of the 16kHz WAV~~
+- Pre-transcription: `audio.is_silent()` uses ffmpeg `volumedetect` (threshold -50 dBFS)
+- Post-transcription: `extract_segments()` filters segments with `no_speech_prob > 0.6`
+- Applied in all pipelines: single-file, chunked, and live chunked
 
 ### 1.4 Error handling
 - Validate WAV file size > 0 before transcription
@@ -44,23 +54,21 @@
 
 ---
 
-## Phase 2 — YouTube / URL Transcription
+## Phase 2 — ~~YouTube / URL Transcription~~ DONE
 
-### 2.1 yt-dlp integration
-- Add `yt-dlp` to `pixi.toml` dependencies (available on conda-forge)
-- New `--url` flag in `transcribe.sh`
-- Flow: `yt-dlp -x --audio-format wav` → ffmpeg 16kHz mono → transcribe
-- Skip the Swift capture tool entirely for URL mode
+### ~~2.1 yt-dlp integration~~ DONE
+- ~~Add `yt-dlp` to `pixi.toml` dependencies~~
+- `scribe-md url <URL>` subcommand
+- Flow: yt-dlp download → ffmpeg 16kHz mono → transcribe
 
-### 2.2 Long video support
-- For videos > 30 min, automatically use chunked transcription (split with ffmpeg `-ss`/`-t`)
-- Reuse existing chunk merge infrastructure
-- Progress reporting: estimated time based on audio duration vs. processing speed
+### ~~2.2 Long video support~~ DONE
+- ~~For videos > 30 min, automatically use chunked transcription (split with ffmpeg `-ss`/`-t`)~~
+- Configurable via `--chunk-seconds` (default 1800s)
+- Reuses chunk merge infrastructure
 
-### 2.3 Playlist / batch support
-- Accept multiple URLs or a playlist URL
-- Output one `.md` per video, or a combined file with video titles as headings
-- `--batch` flag with a text file of URLs (one per line)
+### ~~2.3 Playlist / batch support~~ DONE
+- Playlist detection and iteration (one `.md` per video)
+- Output filename derived from video title
 
 ---
 
@@ -106,26 +114,18 @@
 
 ---
 
-## Phase 5 — Unified Python CLI
+## Phase 5 — ~~Unified Python CLI~~ DONE
 
-### 5.1 Replace shell orchestrator with Python
-- `transcribe.sh` has grown complex (FIFO, signal handling, two code paths)
-- Rewrite as a Python CLI using `click` or `typer`
-- Manage Swift subprocess, ffmpeg, and Whisper from Python
-- Better error handling, progress bars, and structured logging
-- Entry point: `pixi run transcribe` (registered in pixi.toml tasks)
+### ~~5.1 Replace shell orchestrator with Python~~ DONE
+- ~~Rewrite as a Python CLI using typer~~
+- Three subcommands: `scribe-md live`, `scribe-md url`, `scribe-md file`
+- Entry point: `pixi run scribe-md` (registered via pyproject.toml `[project.scripts]`)
+- Old `transcribe.sh` and `transcribe.py` deleted
 
 ### 5.2 Configuration file
 - `~/.config/scribe-md/config.toml` or project-local `.scribe-md.toml`
 - Default language, model, output directory, Obsidian vault path, chunk settings
 - Override per-invocation with CLI flags
-
-### 5.3 Pixi task definitions
-- `pixi run capture` — just audio capture
-- `pixi run transcribe <file>` — transcribe existing audio
-- `pixi run transcribe --url <url>` — YouTube transcription
-- `pixi run transcribe --live` — system audio capture + transcription
-- `pixi run transcribe --live --app Zoom` — per-app live capture
 
 ---
 
@@ -151,53 +151,50 @@
 
 ## Implementation Priority
 
-| Priority | Item | Effort | Impact |
+| Priority | Item | Effort | Status |
 |----------|------|--------|--------|
-| P0 | 1.1 Fix audio buffers | Small | Correctness |
-| P0 | 1.2 Fix Ctrl+C | Small | Usability |
-| P0 | 2.1 yt-dlp integration | Small | High — new input source |
-| P1 | 1.3 Silence detection | Small | Prevents hallucination |
-| P1 | 2.2 Long video chunking | Medium | Needed for 2h+ videos |
-| P1 | 4.3 Obsidian integration | Small | User's primary workflow |
-| P2 | 3.1 Per-app capture | Medium | Original vision |
-| P2 | 5.1 Python CLI rewrite | Medium | Maintainability |
-| P2 | 6.3 Incremental output | Small | UX for long recordings |
-| P3 | 4.1 Speaker diarization | Large | Meeting use case |
-| P3 | 4.4 LLM post-processing | Medium | Nice-to-have |
-| P3 | 6.2 Parallel transcription | Medium | Performance |
+| ~~P0~~ | ~~1.1 Fix audio buffers~~ | ~~Small~~ | DONE |
+| ~~P0~~ | ~~1.2 Fix Ctrl+C~~ | ~~Small~~ | DONE |
+| ~~P0~~ | ~~2.1 yt-dlp integration~~ | ~~Small~~ | DONE |
+| ~~P1~~ | ~~1.3 Silence detection~~ | ~~Small~~ | DONE |
+| ~~P1~~ | ~~2.2 Long video chunking~~ | ~~Medium~~ | DONE |
+| P1 | 4.3 Obsidian integration | Small | |
+| P2 | 3.1 Per-app capture | Medium | |
+| ~~P2~~ | ~~5.1 Python CLI rewrite~~ | ~~Medium~~ | DONE |
+| P2 | 6.3 Incremental output | Small | |
+| P3 | 4.1 Speaker diarization | Large | |
+| P3 | 4.4 LLM post-processing | Medium | |
+| P3 | 6.2 Parallel transcription | Medium | |
 
 ---
 
 ## Tech Stack Summary
 
-| Component | Current | Target |
-|-----------|---------|--------|
-| Audio capture | Swift + ScreenCaptureKit | Same (extend for per-app) |
-| Audio download | — | yt-dlp (via Pixi) |
-| Audio conversion | ffmpeg (system) | ffmpeg (via Pixi) |
-| Transcription | mlx-whisper (large-v3) | Same + model presets |
-| Diarization | — | pyannote-audio (optional) |
-| Orchestrator | Bash (transcribe.sh) | Python CLI (click/typer) |
-| Dependencies | Pixi | Pixi |
-| Output | Markdown | Markdown + Obsidian frontmatter |
+| Component | Status |
+|-----------|--------|
+| Audio capture | Swift + ScreenCaptureKit (system-wide) |
+| Audio download | yt-dlp (via Pixi conda-forge) |
+| Audio conversion | ffmpeg (via Pixi conda-forge) |
+| Transcription | mlx-whisper large-v3 (Apple Silicon) |
+| Orchestrator | Python CLI (typer) |
+| Dependencies | Pixi (conda-forge + PyPI) |
+| Output | Markdown with optional timestamps |
 
 ---
 
-## File Structure (Target)
+## Setup (Any Apple Silicon Mac)
 
-```
-scribe-md/
-  capture/                    # Swift CLI (ScreenCaptureKit)
-    Package.swift
-    Sources/main.swift
-  scribe_md/                  # Python package
-    __init__.py
-    cli.py                    # Click/Typer CLI entry point
-    transcribe.py             # Whisper transcription
-    merge.py                  # Chunk merge logic
-    audio.py                  # ffmpeg helpers, silence detection
-    download.py               # yt-dlp wrapper
-    format.py                 # Markdown + Obsidian formatting
-  pixi.toml
-  .scribe-md.toml             # Default config (example)
+```bash
+# Prerequisites
+xcode-select --install          # Swift toolchain (for live capture)
+curl -fsSL https://pixi.sh/install.sh | bash  # pixi
+
+# Install
+git clone <repo-url> && cd scribe-md
+pixi install
+
+# Use
+pixi run scribe-md url "https://youtube.com/watch?v=..."
+pixi run scribe-md live -l ko -o meeting.md
+pixi run scribe-md file recording.wav -o output.md
 ```
