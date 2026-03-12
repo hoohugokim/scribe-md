@@ -109,9 +109,9 @@ scribe-md/
 - ~~Daily note append mode: `--daily-note` appends `## Transcription (HH:MM)` section~~
 - `--frontmatter/--no-frontmatter` flag (default: on when vault is set)
 
-### 4.4 Post-processing with LLM (optional)
-- `--summarize` flag: pipe transcription through a local LLM (e.g., mlx-lm) for summarization
-- `--clean` flag: fix obvious Whisper artifacts (repeated phrases, hallucinated text)
+### ~~4.4 Post-processing with LLM (optional)~~ DONE
+- ~~`--summarize` flag: pipe transcription through a local LLM (e.g., mlx-lm) for summarization~~
+- ~~`--clean` flag: fix obvious Whisper artifacts (repeated phrases, hallucinated text)~~
 - Keep this optional — core tool stays offline/local without requiring an LLM
 
 ---
@@ -140,10 +140,10 @@ scribe-md/
 - `resolve_model()` maps short names to full HF repo paths
 - Default: `large-v3` (mlx-community/whisper-large-v3-mlx)
 
-### 6.2 Parallel chunk transcription
-- Current chunked pipeline is sequential (transcribe chunk N while recording chunk N+1)
-- For offline mode (yt-dlp / existing file): parallelize transcription across chunks
-- Limit concurrency to avoid ANE contention (2-3 parallel workers max)
+### ~~6.2 Parallel chunk transcription~~ DONE
+- ~~Current chunked pipeline is sequential (transcribe chunk N while recording chunk N+1)~~
+- ~~For offline mode (yt-dlp / existing file): parallelize transcription across chunks~~
+- ~~Limit concurrency to avoid ANE contention (2-3 parallel workers max)~~
 
 ### ~~6.3 Incremental output~~ DONE
 - ~~In chunked mode, append to `.md` file as each chunk is transcribed~~
@@ -172,8 +172,8 @@ scribe-md/
 | ~~P2~~ | ~~6.1 Model management~~ | ~~Small~~ | DONE |
 | ~~P2~~ | ~~6.3 Incremental output~~ | ~~Small~~ | DONE |
 | P3 | 4.1 Speaker diarization | Large | |
-| P3 | 4.4 LLM post-processing | Medium | |
-| P3 | 6.2 Parallel transcription | Medium | |
+| ~~P3~~ | ~~4.4 LLM post-processing~~ | ~~Medium~~ | DONE |
+| ~~P3~~ | ~~6.2 Parallel transcription~~ | ~~Medium~~ | DONE |
 
 ---
 

@@ -3,13 +3,15 @@
 import json
 import signal
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
 import typer
 from rich.console import Console
 
-from . import audio, capture, downloader, merger, obsidian, transcriber
+from . import audio, capture, downloader, merger, obsidian, postprocess, transcriber
 from .audio import AudioConversionError, DiskFullError
 from .capture import CaptureError
 from .config import (
@@ -191,6 +193,41 @@ def _write_obsidian_output(
 
 
 # ---------------------------------------------------------------------------
+# Post-processing helpers
+# ---------------------------------------------------------------------------
+
+
+def _apply_postprocessing(
+    text: str,
+    *,
+    clean: bool = False,
+    summarize: bool = False,
+    summary_model: str = "",
+) -> str:
+    """Apply optional post-processing steps to the merged transcription text.
+
+    Steps (in order):
+    1. ``--clean``: rule-based artifact removal (no LLM).
+    2. ``--summarize``: append an LLM-generated ``## Summary`` section.
+
+    Returns the (possibly modified) text.
+    """
+    if clean:
+        text = postprocess.clean_transcription(text)
+
+    if summarize:
+        try:
+            model = summary_model or None
+            summary = postprocess.summarize_with_llm(text, model=model)
+            text = text.rstrip() + "\n\n## Summary\n\n" + summary + "\n"
+        except ImportError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            raise typer.Exit(1)
+
+    return text
+
+
+# ---------------------------------------------------------------------------
 # Shared transcription pipeline
 # ---------------------------------------------------------------------------
 
@@ -219,6 +256,9 @@ def _transcribe_single(
     timestamp_mode: str = "segment",
     paragraph_gap: float = 2.0,
     write_fn=None,
+    clean: bool = False,
+    summarize: bool = False,
+    summary_model: str = "",
 ) -> None:
     """Transcribe a single audio file and write Markdown output.
 
@@ -240,11 +280,29 @@ def _transcribe_single(
         [segments], chunk_duration=0, overlap=0, timestamps=timestamps,
         timestamp_mode=timestamp_mode, paragraph_gap=paragraph_gap,
     )
+    text = _apply_postprocessing(
+        text, clean=clean, summarize=summarize, summary_model=summary_model,
+    )
     if write_fn is not None:
         write_fn(text, output)
     else:
         output.write_text(text, encoding="utf-8")
         log(f"Wrote {output}")
+
+
+def _transcribe_chunk(
+    chunk_path: Path,
+    model: str,
+    language: str | None,
+) -> list[dict]:
+    """Transcribe a single chunk file, returning its segments.
+
+    Returns an empty list if the chunk is silent or has no speech.
+    """
+    if audio.is_silent(chunk_path):
+        return []
+    result = transcriber.transcribe_audio(chunk_path, model=model, language=language)
+    return transcriber.extract_segments(result)
 
 
 def _transcribe_chunked(
@@ -260,12 +318,23 @@ def _transcribe_chunked(
     paragraph_gap: float = 2.0,
     incremental: bool = False,
     write_fn=None,
+    parallel: bool = True,
+    workers: int = 2,
+    clean: bool = False,
+    summarize: bool = False,
+    summary_model: str = "",
 ) -> None:
     """Split a long audio file into chunks, transcribe each, and merge.
 
     When *incremental* is True, each chunk's preliminary transcription is
     appended to the output file as soon as it completes.  The final merge
     pass then overwrites the file with the properly deduped result.
+
+    When *parallel* is True (default), chunks are transcribed concurrently
+    using a ``ThreadPoolExecutor`` with at most *workers* threads.  This
+    significantly speeds up offline transcription (file / url commands).
+    A ``ThreadPoolExecutor`` (not ``ProcessPoolExecutor``) is used because
+    mlx-whisper shares GPU/ANE state within a single process.
 
     If *write_fn* is provided it is called as ``write_fn(text, output)``
     instead of writing directly to *output*.
@@ -280,19 +349,16 @@ def _transcribe_chunked(
         if incremental:
             output.write_text("", encoding="utf-8")
 
-        all_segments: list[list[dict]] = []
-        for i, chunk_path in enumerate(chunks):
-            console.print(f"  Transcribing chunk {i + 1}/{len(chunks)}...")
-            if audio.is_silent(chunk_path):
-                log(f"  Chunk {i}: silent, skipping")
-                all_segments.append([])
-                continue
-            result = transcriber.transcribe_audio(chunk_path, model=model, language=language)
-            segments = transcriber.extract_segments(result)
-            all_segments.append(segments)
-
-            if incremental:
-                _append_incremental(output, segments)
+        if parallel and len(chunks) > 1:
+            all_segments = _transcribe_chunks_parallel(
+                chunks, model, language, output,
+                incremental=incremental, workers=workers,
+            )
+        else:
+            all_segments = _transcribe_chunks_sequential(
+                chunks, model, language, output,
+                incremental=incremental,
+            )
 
         text = merger.merge_segments(
             all_segments,
@@ -302,11 +368,93 @@ def _transcribe_chunked(
             timestamp_mode=timestamp_mode,
             paragraph_gap=paragraph_gap,
         )
+        text = _apply_postprocessing(
+            text, clean=clean, summarize=summarize, summary_model=summary_model,
+        )
         if write_fn is not None:
             write_fn(text, output)
         else:
             output.write_text(text, encoding="utf-8")
             log(f"Wrote {output} ({len(chunks)} chunks merged)")
+
+
+def _transcribe_chunks_sequential(
+    chunks: list[Path],
+    model: str,
+    language: str | None,
+    output: Path,
+    *,
+    incremental: bool = False,
+) -> list[list[dict]]:
+    """Transcribe chunks one at a time (original sequential pipeline)."""
+    all_segments: list[list[dict]] = []
+    for i, chunk_path in enumerate(chunks):
+        console.print(f"  Transcribing chunk {i + 1}/{len(chunks)}...")
+        try:
+            segments = _transcribe_chunk(chunk_path, model, language)
+        except Exception as e:
+            log(f"  Chunk {i} failed: {e}")
+            segments = []
+        if not segments:
+            log(f"  Chunk {i}: silent or no speech, skipping")
+        all_segments.append(segments)
+
+        if incremental:
+            _append_incremental(output, segments)
+
+    return all_segments
+
+
+def _transcribe_chunks_parallel(
+    chunks: list[Path],
+    model: str,
+    language: str | None,
+    output: Path,
+    *,
+    incremental: bool = False,
+    workers: int = 2,
+) -> list[list[dict]]:
+    """Transcribe chunks in parallel using a ThreadPoolExecutor.
+
+    Results are always collected in chunk order for proper merging.
+    Incremental output is written as each chunk completes (in completion
+    order), with a lock to prevent interleaved file writes.
+    """
+    n = len(chunks)
+    all_segments: list[list[dict]] = [[] for _ in range(n)]
+    write_lock = threading.Lock()
+    effective_workers = min(workers, n)
+
+    log(f"Parallel transcription: {effective_workers} workers for {n} chunks")
+
+    with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+        # Submit all chunks, tagging each future with its index
+        future_to_idx = {}
+        for i, chunk_path in enumerate(chunks):
+            future = executor.submit(_transcribe_chunk, chunk_path, model, language)
+            future_to_idx[future] = i
+
+        # Collect results as they complete
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                segments = future.result()
+            except Exception as e:
+                log(f"  Chunk {idx} failed: {e}")
+                segments = []
+
+            all_segments[idx] = segments
+
+            if segments:
+                console.print(f"  Chunk {idx + 1}/{n} done ({len(segments)} segments)")
+            else:
+                log(f"  Chunk {idx}: silent or no speech, skipping")
+
+            if incremental:
+                with write_lock:
+                    _append_incremental(output, segments)
+
+    return all_segments
 
 
 # ---------------------------------------------------------------------------
@@ -340,9 +488,20 @@ def file(
         None, "--incremental/--no-incremental",
         help="Write chunks to output file incrementally (default: off)",
     ),
+    parallel: Optional[bool] = typer.Option(
+        None, "--parallel/--no-parallel",
+        help="Parallelize chunk transcription (default: on)",
+    ),
+    workers: Optional[int] = typer.Option(
+        None, "--workers",
+        help="Number of parallel transcription workers (1-4, default: 2)",
+    ),
     vault: Optional[str] = typer.Option(None, "--vault", help="Obsidian vault path (overrides config)"),
     daily_note: bool = typer.Option(False, "--daily-note", help="Append to today's daily note"),
     frontmatter: Optional[bool] = typer.Option(None, "--frontmatter/--no-frontmatter", help="Include YAML frontmatter (default: on when vault is set)"),
+    clean: Optional[bool] = typer.Option(None, "--clean", help="Apply rule-based artifact cleaning to the transcription"),
+    summarize: bool = typer.Option(False, "--summarize", help="Append an LLM-generated summary (requires mlx-lm)"),
+    summary_model: Optional[str] = typer.Option(None, "--summary-model", help="Override the LLM model for summarization"),
 ) -> None:
     """Transcribe an existing audio file to Markdown."""
     if not audio_file.exists():
@@ -362,8 +521,12 @@ def file(
     r_chunk_seconds = _resolve(chunk_seconds, cfg.chunk_seconds)
     r_overlap_seconds = _resolve(overlap_seconds, cfg.overlap_seconds)
     r_incremental = _resolve(incremental, cfg.incremental)
+    r_parallel = _resolve(parallel, cfg.parallel)
+    r_workers = max(1, min(4, _resolve(workers, cfg.workers)))
     r_vault = _resolve(vault, cfg.vault)
     r_daily_note_folder = cfg.daily_note_folder
+    r_clean = _resolve(clean, cfg.clean)
+    r_summary_model = _resolve(summary_model, cfg.summary_model)
 
     # Frontmatter defaults to True when vault is set
     r_frontmatter = frontmatter if frontmatter is not None else bool(r_vault)
@@ -400,12 +563,18 @@ def file(
                     timestamp_mode=ts_mode, paragraph_gap=r_paragraph_gap,
                     incremental=r_incremental,
                     write_fn=write_fn,
+                    parallel=r_parallel,
+                    workers=r_workers,
+                    clean=r_clean, summarize=summarize,
+                    summary_model=r_summary_model,
                 )
             else:
                 _transcribe_single(
                     converted, out, r_model, r_language, ts,
                     timestamp_mode=ts_mode, paragraph_gap=r_paragraph_gap,
                     write_fn=write_fn,
+                    clean=r_clean, summarize=summarize,
+                    summary_model=r_summary_model,
                 )
     except AudioConversionError as e:
         console.print(f"[red]Error:[/red] {e}")
@@ -457,9 +626,20 @@ def url(
         None, "--incremental/--no-incremental",
         help="Write chunks to output file incrementally (default: off)",
     ),
+    parallel: Optional[bool] = typer.Option(
+        None, "--parallel/--no-parallel",
+        help="Parallelize chunk transcription (default: on)",
+    ),
+    workers: Optional[int] = typer.Option(
+        None, "--workers",
+        help="Number of parallel transcription workers (1-4, default: 2)",
+    ),
     vault: Optional[str] = typer.Option(None, "--vault", help="Obsidian vault path (overrides config)"),
     daily_note: bool = typer.Option(False, "--daily-note", help="Append to today's daily note"),
     frontmatter: Optional[bool] = typer.Option(None, "--frontmatter/--no-frontmatter", help="Include YAML frontmatter (default: on when vault is set)"),
+    clean: Optional[bool] = typer.Option(None, "--clean", help="Apply rule-based artifact cleaning to the transcription"),
+    summarize: bool = typer.Option(False, "--summarize", help="Append an LLM-generated summary (requires mlx-lm)"),
+    summary_model: Optional[str] = typer.Option(None, "--summary-model", help="Override the LLM model for summarization"),
 ) -> None:
     """Transcribe audio from a YouTube URL to Markdown."""
     cfg = load_config()
@@ -471,8 +651,12 @@ def url(
     r_chunk_seconds = _resolve(chunk_seconds, cfg.chunk_seconds)
     r_overlap_seconds = _resolve(overlap_seconds, cfg.overlap_seconds)
     r_incremental = _resolve(incremental, cfg.incremental)
+    r_parallel = _resolve(parallel, cfg.parallel)
+    r_workers = max(1, min(4, _resolve(workers, cfg.workers)))
     r_vault = _resolve(vault, cfg.vault)
     r_daily_note_folder = cfg.daily_note_folder
+    r_clean = _resolve(clean, cfg.clean)
+    r_summary_model = _resolve(summary_model, cfg.summary_model)
 
     # Frontmatter defaults to True when vault is set
     r_frontmatter = frontmatter if frontmatter is not None else bool(r_vault)
@@ -498,9 +682,12 @@ def url(
                         overlap_seconds=r_overlap_seconds,
                         timestamp_mode=ts_mode, paragraph_gap=r_paragraph_gap,
                         incremental=r_incremental,
+                        parallel=r_parallel, workers=r_workers,
                         vault=r_vault, daily_note=daily_note,
                         frontmatter=r_frontmatter,
                         daily_note_folder=r_daily_note_folder,
+                        clean=r_clean, summarize=summarize,
+                        summary_model=r_summary_model,
                     )
                 except DiskFullError:
                     raise  # Disk-full is fatal even for playlists
@@ -513,9 +700,12 @@ def url(
                 overlap_seconds=r_overlap_seconds,
                 timestamp_mode=ts_mode, paragraph_gap=r_paragraph_gap,
                 incremental=r_incremental,
+                parallel=r_parallel, workers=r_workers,
                 vault=r_vault, daily_note=daily_note,
                 frontmatter=r_frontmatter,
                 daily_note_folder=r_daily_note_folder,
+                clean=r_clean, summarize=summarize,
+                summary_model=r_summary_model,
             )
     except (AudioConversionError, TranscriptionError) as e:
         console.print(f"[red]Error:[/red] {e}")
@@ -545,10 +735,15 @@ def _transcribe_url(
     timestamp_mode: str = "segment",
     paragraph_gap: float = 2.0,
     incremental: bool = False,
+    parallel: bool = True,
+    workers: int = 2,
     vault: str = "",
     daily_note: bool = False,
     frontmatter: bool = False,
     daily_note_folder: str = "Daily Notes",
+    clean: bool = False,
+    summarize: bool = False,
+    summary_model: str = "",
 ) -> None:
     """Download and transcribe a single video URL."""
     with tempfile.TemporaryDirectory(prefix="scribe-md-dl-") as tmp:
@@ -587,12 +782,18 @@ def _transcribe_url(
                 timestamp_mode=timestamp_mode, paragraph_gap=paragraph_gap,
                 incremental=incremental,
                 write_fn=write_fn,
+                parallel=parallel,
+                workers=workers,
+                clean=clean, summarize=summarize,
+                summary_model=summary_model,
             )
         else:
             _transcribe_single(
                 converted, out, model, language, timestamps,
                 timestamp_mode=timestamp_mode, paragraph_gap=paragraph_gap,
                 write_fn=write_fn,
+                clean=clean, summarize=summarize,
+                summary_model=summary_model,
             )
 
 
@@ -632,6 +833,9 @@ def live(
     vault: Optional[str] = typer.Option(None, "--vault", help="Obsidian vault path (overrides config)"),
     daily_note: bool = typer.Option(False, "--daily-note", help="Append to today's daily note"),
     frontmatter: Optional[bool] = typer.Option(None, "--frontmatter/--no-frontmatter", help="Include YAML frontmatter (default: on when vault is set)"),
+    clean: Optional[bool] = typer.Option(None, "--clean", help="Apply rule-based artifact cleaning to the transcription"),
+    summarize: bool = typer.Option(False, "--summarize", help="Append an LLM-generated summary (requires mlx-lm)"),
+    summary_model: Optional[str] = typer.Option(None, "--summary-model", help="Override the LLM model for summarization"),
 ) -> None:
     """Capture and transcribe system audio in real-time."""
     cfg = load_config()
@@ -646,6 +850,8 @@ def live(
     r_incremental = _resolve(incremental, cfg.live_incremental)
     r_vault = _resolve(vault, cfg.vault)
     r_daily_note_folder = cfg.daily_note_folder
+    r_clean = _resolve(clean, cfg.clean)
+    r_summary_model = _resolve(summary_model, cfg.summary_model)
     r_output = output or Path("transcription.md")
 
     # Frontmatter defaults to True when vault is set
@@ -680,12 +886,16 @@ def live(
                 timestamp_mode=ts_mode, paragraph_gap=r_paragraph_gap,
                 incremental=r_incremental,
                 write_fn=write_fn,
+                clean=r_clean, summarize=summarize,
+                summary_model=r_summary_model,
             )
         else:
             _live_single(
                 r_output, duration, r_language, r_model, ts, r_keep_audio, apps,
                 timestamp_mode=ts_mode, paragraph_gap=r_paragraph_gap,
                 write_fn=write_fn,
+                clean=r_clean, summarize=summarize,
+                summary_model=r_summary_model,
             )
     except CaptureError as e:
         console.print(f"[red]Error:[/red] {e}")
@@ -718,6 +928,9 @@ def _live_single(
     timestamp_mode: str = "segment",
     paragraph_gap: float = 2.0,
     write_fn=None,
+    clean: bool = False,
+    summarize: bool = False,
+    summary_model: str = "",
 ) -> None:
     """Single-file live capture pipeline."""
     with tempfile.TemporaryDirectory(prefix="scribe-md-live-") as tmp:
@@ -759,6 +972,8 @@ def _live_single(
             converted, output, model, language, timestamps,
             timestamp_mode=timestamp_mode, paragraph_gap=paragraph_gap,
             write_fn=write_fn,
+            clean=clean, summarize=summarize,
+            summary_model=summary_model,
         )
 
         if keep_audio:
@@ -783,6 +998,9 @@ def _live_chunked(
     paragraph_gap: float = 2.0,
     incremental: bool = False,
     write_fn=None,
+    clean: bool = False,
+    summarize: bool = False,
+    summary_model: str = "",
 ) -> None:
     """Chunked live capture pipeline with concurrent transcription."""
     with tempfile.TemporaryDirectory(prefix="scribe-md-chunks-") as tmp:
@@ -874,6 +1092,9 @@ def _live_chunked(
             timestamps=timestamps,
             timestamp_mode=timestamp_mode,
             paragraph_gap=paragraph_gap,
+        )
+        text = _apply_postprocessing(
+            text, clean=clean, summarize=summarize, summary_model=summary_model,
         )
         if write_fn is not None:
             write_fn(text, output)

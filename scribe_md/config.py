@@ -34,6 +34,10 @@ paragraph_gap = 2.0       # seconds of silence to trigger a paragraph break
 chunk_seconds = 1800
 overlap_seconds = 5
 incremental = false       # append chunks to output file as they complete
+parallel = true           # parallelize chunk transcription (file/url only)
+workers = 2               # max parallel transcription workers (1-4)
+clean = false             # apply rule-based artifact cleaning to transcription
+summary_model = ""        # LLM model for --summarize (empty = default model)
 
 [output]
 directory = "."           # default output directory
@@ -61,6 +65,10 @@ class ScribeMdConfig:
     chunk_seconds: float = 1800
     overlap_seconds: float = 5
     incremental: bool = False
+    parallel: bool = True
+    workers: int = 2
+    clean: bool = False
+    summary_model: str = ""
 
     # [output]
     output_directory: str = "."
@@ -115,6 +123,14 @@ def _apply_toml(cfg: ScribeMdConfig, data: dict, source: str) -> None:
         cfg.paragraph_gap = float(defaults["paragraph_gap"])
     if "incremental" in defaults:
         cfg.incremental = bool(defaults["incremental"])
+    if "parallel" in defaults:
+        cfg.parallel = bool(defaults["parallel"])
+    if "workers" in defaults:
+        cfg.workers = max(1, min(4, int(defaults["workers"])))
+    if "clean" in defaults:
+        cfg.clean = bool(defaults["clean"])
+    if "summary_model" in defaults:
+        cfg.summary_model = str(defaults["summary_model"])
 
     if "directory" in output:
         cfg.output_directory = str(output["directory"])
@@ -184,6 +200,10 @@ def config_as_toml(cfg: ScribeMdConfig) -> str:
         f"chunk_seconds = {cfg.chunk_seconds}",
         f"overlap_seconds = {cfg.overlap_seconds}",
         f"incremental = {'true' if cfg.incremental else 'false'}",
+        f"parallel = {'true' if cfg.parallel else 'false'}",
+        f"workers = {cfg.workers}",
+        f"clean = {'true' if cfg.clean else 'false'}",
+        f'summary_model = "{cfg.summary_model}"',
         "",
         "[output]",
         f'directory = "{cfg.output_directory}"',
