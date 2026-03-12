@@ -40,16 +40,37 @@ def ensure_capture_binary() -> Path:
     return CAPTURE_BIN
 
 
+def list_apps() -> list[dict]:
+    """List running apps visible to ScreenCaptureKit.
+
+    Returns a list of dicts with 'name' and 'bundle_id' keys, sorted by name.
+    """
+    binary = ensure_capture_binary()
+    result = subprocess.run(
+        [str(binary), "--list-apps"],
+        capture_output=True, text=True, check=True,
+    )
+    apps = []
+    for line in result.stdout.strip().split("\n"):
+        if "\t" in line:
+            name, bundle_id = line.split("\t", 1)
+            apps.append({"name": name, "bundle_id": bundle_id})
+    return apps
+
+
 def run_capture(
     output_path: Path,
     duration: float | None = None,
     chunk_seconds: float = 0,
     overlap_seconds: float = 5,
+    app: str | None = None,
 ) -> subprocess.Popen:
     """Launch the capture binary, returning the Popen handle.
 
     In chunked mode, chunk file paths are emitted to stdout (one per line).
     Status messages go to stderr.
+
+    If `app` is specified, captures audio only from that app (name substring match).
     """
     binary = ensure_capture_binary()
     args = [str(binary), "--output", str(output_path)]
@@ -59,5 +80,7 @@ def run_capture(
     if chunk_seconds > 0:
         args.extend(["--chunk-seconds", str(chunk_seconds)])
         args.extend(["--overlap-seconds", str(overlap_seconds)])
+    if app is not None:
+        args.extend(["--app", app])
 
     return subprocess.Popen(args, stdout=subprocess.PIPE, stderr=None)

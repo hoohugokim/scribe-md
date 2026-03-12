@@ -72,13 +72,15 @@ scribe-md/
 
 ---
 
-## Phase 3 — Per-App Audio Capture
+## Phase 3 — ~~Per-App Audio Capture~~ DONE
 
-### 3.1 App targeting
-- Add `--app <name>` and `--bundle-id <id>` flags to Swift CLI
-- Use `SCShareableContent.excludingDesktopWindows` to enumerate running apps
-- Create `SCContentFilter` targeting a specific `SCRunningApplication` instead of display-wide capture
-- `--list-apps` flag to show currently running apps with audio output
+### ~~3.1 App targeting~~ DONE
+- ~~Add `--app <name>` and `--bundle-id <id>` flags to Swift CLI~~
+- ~~Use `SCShareableContent.excludingDesktopWindows` to enumerate running apps~~
+- ~~Create `SCContentFilter` targeting a specific `SCRunningApplication` instead of display-wide capture~~
+- ~~`--list-apps` flag to show currently running apps~~
+- `scribe-md list-apps` subcommand and `scribe-md live --app <name>` in Python CLI
+- App name matching: exact match first, then case-insensitive substring
 
 ### 3.2 Multi-app capture
 - Support `--app "Zoom" --app "Chrome"` to capture from multiple apps simultaneously
@@ -159,7 +161,7 @@ scribe-md/
 | ~~P1~~ | ~~1.3 Silence detection~~ | ~~Small~~ | DONE |
 | ~~P1~~ | ~~2.2 Long video chunking~~ | ~~Medium~~ | DONE |
 | P1 | 4.3 Obsidian integration | Small | |
-| P2 | 3.1 Per-app capture | Medium | |
+| ~~P2~~ | ~~3.1 Per-app capture~~ | ~~Medium~~ | DONE |
 | ~~P2~~ | ~~5.1 Python CLI rewrite~~ | ~~Medium~~ | DONE |
 | P2 | 6.3 Incremental output | Small | |
 | P3 | 4.1 Speaker diarization | Large | |

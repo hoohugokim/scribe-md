@@ -9,6 +9,9 @@ struct Config {
     var duration: Double? = nil
     var chunkSeconds: Double = 0
     var overlapSeconds: Double = 5
+    var appName: String? = nil
+    var bundleId: String? = nil
+    var listApps = false
 }
 
 func parseArgs() -> Config {
@@ -25,6 +28,12 @@ func parseArgs() -> Config {
             i += 1; if i < args.count { c.chunkSeconds = Double(args[i]) ?? 0 }
         case "--overlap-seconds":
             i += 1; if i < args.count { c.overlapSeconds = Double(args[i]) ?? 5 }
+        case "--app", "-a":
+            i += 1; if i < args.count { c.appName = args[i] }
+        case "--bundle-id":
+            i += 1; if i < args.count { c.bundleId = args[i] }
+        case "--list-apps":
+            c.listApps = true
         case "--help", "-h":
             fputs("""
                 Usage: appaudio-capture [OPTIONS]
@@ -32,6 +41,9 @@ func parseArgs() -> Config {
                   --duration, -d SEC        Recording duration (omit for manual stop)
                   --chunk-seconds SEC       Chunk duration for pipelined output (0=disabled)
                   --overlap-seconds SEC     Overlap between chunks (default: 5)
+                  --app, -a NAME            Capture audio from a specific app (substring match)
+                  --bundle-id ID            Capture audio from app with this bundle identifier
+                  --list-apps               List running apps and exit
 
                 """, stderr)
             exit(0)
@@ -210,9 +222,48 @@ class AudioRecorder: NSObject, SCStreamOutput {
     }
 }
 
+// MARK: - App lookup
+
+func findApp(
+    in applications: [SCRunningApplication],
+    name: String?, bundleId: String?
+) -> SCRunningApplication? {
+    if let bundleId = bundleId {
+        return applications.first { $0.bundleIdentifier == bundleId }
+    }
+    if let name = name {
+        // Exact match first, then case-insensitive substring
+        return applications.first { $0.applicationName == name }
+            ?? applications.first { $0.applicationName.localizedCaseInsensitiveContains(name) }
+    }
+    return nil
+}
+
 // MARK: - Main
 
 let config = parseArgs()
+
+// Handle --list-apps early
+if config.listApps {
+    let listSemaphore = DispatchSemaphore(value: 0)
+    Task {
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(
+                false, onScreenWindowsOnly: false)
+            let apps = content.applications
+                .sorted { $0.applicationName.localizedCompare($1.applicationName) == .orderedAscending }
+            for app in apps {
+                print("\(app.applicationName)\t\(app.bundleIdentifier)")
+            }
+        } catch {
+            fputs("Error: \(error.localizedDescription)\n", stderr)
+        }
+        listSemaphore.signal()
+    }
+    listSemaphore.wait()
+    exit(0)
+}
+
 let recorder = AudioRecorder(
     outputPath: config.output,
     chunkSeconds: config.chunkSeconds,
@@ -239,16 +290,10 @@ func stopOnce(cancel: Bool = false) {
 }
 
 // SIGINT handler — use sigwait on a dedicated thread for reliability.
-// The old pattern (signal(SIGINT, SIG_IGN) + DispatchSource) fails when
-// the parent process has SIG_IGN because the kernel discards the signal
-// before it reaches the kqueue-based dispatch source.
-// sigprocmask(SIG_BLOCK) queues the signal instead of discarding it,
-// and sigwait() atomically retrieves pending blocked signals.
 var sigintSet = sigset_t()
 sigemptyset(&sigintSet)
 sigaddset(&sigintSet, SIGINT)
 sigprocmask(SIG_BLOCK, &sigintSet, nil)
-// Reset disposition from SIG_IGN to SIG_DFL (safe — signal is blocked)
 signal(SIGINT, SIG_DFL)
 
 Thread.detachNewThread {
@@ -288,7 +333,28 @@ Task {
         sc.height = 2
         sc.minimumFrameInterval = CMTime(value: 1, timescale: 1)
 
-        let filter = SCContentFilter(display: display, excludingWindows: [])
+        // Build content filter — per-app or system-wide
+        let filter: SCContentFilter
+        if config.appName != nil || config.bundleId != nil {
+            guard let app = findApp(
+                in: content.applications,
+                name: config.appName, bundleId: config.bundleId
+            ) else {
+                let query = config.bundleId ?? config.appName ?? ""
+                fputs("Error: No running app matching '\(query)'\n", stderr)
+                fputs("Use --list-apps to see available apps.\n", stderr)
+                exit(1)
+            }
+            fputs("Capturing from: \(app.applicationName) (\(app.bundleIdentifier))\n", stderr)
+            filter = SCContentFilter(
+                display: display,
+                including: [app],
+                exceptingWindows: []
+            )
+        } else {
+            filter = SCContentFilter(display: display, excludingWindows: [])
+        }
+
         let stream = SCStream(filter: filter, configuration: sc, delegate: nil)
         let audioQueue = DispatchQueue(label: "audio-handler", qos: .userInitiated)
         try stream.addStreamOutput(recorder, type: .audio, sampleHandlerQueue: audioQueue)
@@ -296,7 +362,8 @@ Task {
         activeStream = stream
         try await stream.startCapture()
 
-        fputs("Recording to \(config.output)... ", stderr)
+        let target = config.appName ?? config.bundleId ?? "system audio"
+        fputs("Recording \(target) to \(config.output)... ", stderr)
         if let dur = config.duration {
             fputs("(\(Int(dur))s)\n", stderr)
             DispatchQueue.global().asyncAfter(deadline: .now() + dur) { stopOnce() }

@@ -228,15 +228,16 @@ def live(
     ),
     overlap_seconds: float = typer.Option(5, "--overlap-seconds", help="Overlap between chunks"),
     keep_audio: bool = typer.Option(False, "--keep-audio", help="Keep intermediate WAV files"),
+    app_name: Optional[str] = typer.Option(None, "--app", "-a", help="Capture from a specific app (name substring)"),
 ) -> None:
     """Capture and transcribe system audio in real-time."""
     if chunk_seconds > 0:
         _live_chunked(
             output, duration, language, model, timestamps,
-            chunk_seconds, overlap_seconds, keep_audio,
+            chunk_seconds, overlap_seconds, keep_audio, app_name,
         )
     else:
-        _live_single(output, duration, language, model, timestamps, keep_audio)
+        _live_single(output, duration, language, model, timestamps, keep_audio, app_name)
 
 
 def _live_single(
@@ -246,13 +247,14 @@ def _live_single(
     model: str,
     timestamps: bool,
     keep_audio: bool,
+    app: str | None = None,
 ) -> None:
     """Single-file live capture pipeline."""
     with tempfile.TemporaryDirectory(prefix="scribe-md-live-") as tmp:
         tmp_dir = Path(tmp)
         raw_wav = tmp_dir / "recording.wav"
 
-        proc = capture.run_capture(raw_wav, duration=duration)
+        proc = capture.run_capture(raw_wav, duration=duration, app=app)
 
         # Let Ctrl+C propagate to the capture subprocess
         original_sigint = signal.getsignal(signal.SIGINT)
@@ -301,6 +303,7 @@ def _live_chunked(
     chunk_seconds: float,
     overlap_seconds: float,
     keep_audio: bool,
+    app: str | None = None,
 ) -> None:
     """Chunked live capture pipeline with concurrent transcription."""
     with tempfile.TemporaryDirectory(prefix="scribe-md-chunks-") as tmp:
@@ -310,6 +313,7 @@ def _live_chunked(
         proc = capture.run_capture(
             chunk_base, duration=duration,
             chunk_seconds=chunk_seconds, overlap_seconds=overlap_seconds,
+            app=app,
         )
 
         # Handle Ctrl+C: let capture finish current chunk
@@ -391,3 +395,22 @@ def _live_chunked(
             saved_dir = Path(f"chunks_{output.stem}")
             shutil.copytree(tmp_dir, saved_dir)
             log(f"Audio saved: {saved_dir}")
+
+
+# ---------------------------------------------------------------------------
+# scribe-md list-apps
+# ---------------------------------------------------------------------------
+
+
+@app.command("list-apps")
+def list_apps() -> None:
+    """List running apps available for per-app audio capture."""
+    apps = capture.list_apps()
+    if not apps:
+        console.print("[yellow]No apps found.[/yellow]")
+        raise typer.Exit(1)
+
+    console.print(f"{'App Name':<40} Bundle ID")
+    console.print(f"{'─' * 40} {'─' * 40}")
+    for a in apps:
+        console.print(f"{a['name']:<40} {a['bundle_id']}")
