@@ -1,0 +1,17 @@
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+
+# Swift build artifacts
+capture/.build/
+
+# Transcription outputs (user-specific)
+*.md
+!PLAN.md
+!README.md
+
+# Session handoff files
+SESSION-HANDOFF_*.md
+
+# macOS
+.DS_Store

@@ -1,0 +1,16 @@
+[workspace]
+authors = ["HALCIVXIVC <25841608+hoohugokim@users.noreply.github.com>"]
+channels = ["conda-forge"]
+name = "scribe-md"
+platforms = ["osx-arm64"]
+version = "0.1.0"
+
+[tasks]
+build-capture = { cmd = "cd capture && swift build -c release", description = "Build the Swift audio capture CLI" }
+transcribe = { cmd = "python transcribe.py", description = "Run transcription on a WAV file", depends-on = ["build-capture"] }
+
+[dependencies]
+python = ">=3.12,<3.14"
+
+[pypi-dependencies]
+mlx-whisper = "*"
