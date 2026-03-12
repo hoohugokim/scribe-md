@@ -9,7 +9,7 @@ struct Config {
     var duration: Double? = nil
     var chunkSeconds: Double = 0
     var overlapSeconds: Double = 5
-    var appName: String? = nil
+    var appNames: [String] = []
     var bundleId: String? = nil
     var listApps = false
 }
@@ -29,7 +29,7 @@ func parseArgs() -> Config {
         case "--overlap-seconds":
             i += 1; if i < args.count { c.overlapSeconds = Double(args[i]) ?? 5 }
         case "--app", "-a":
-            i += 1; if i < args.count { c.appName = args[i] }
+            i += 1; if i < args.count { c.appNames.append(args[i]) }
         case "--bundle-id":
             i += 1; if i < args.count { c.bundleId = args[i] }
         case "--list-apps":
@@ -41,7 +41,7 @@ func parseArgs() -> Config {
                   --duration, -d SEC        Recording duration (omit for manual stop)
                   --chunk-seconds SEC       Chunk duration for pipelined output (0=disabled)
                   --overlap-seconds SEC     Overlap between chunks (default: 5)
-                  --app, -a NAME            Capture audio from a specific app (substring match)
+                  --app, -a NAME            Capture audio from specific app(s) (repeatable, substring match)
                   --bundle-id ID            Capture audio from app with this bundle identifier
                   --list-apps               List running apps and exit
 
@@ -333,22 +333,39 @@ Task {
         sc.height = 2
         sc.minimumFrameInterval = CMTime(value: 1, timescale: 1)
 
-        // Build content filter — per-app or system-wide
+        // Build content filter — per-app(s) or system-wide
         let filter: SCContentFilter
-        if config.appName != nil || config.bundleId != nil {
-            guard let app = findApp(
-                in: content.applications,
-                name: config.appName, bundleId: config.bundleId
-            ) else {
-                let query = config.bundleId ?? config.appName ?? ""
-                fputs("Error: No running app matching '\(query)'\n", stderr)
-                fputs("Use --list-apps to see available apps.\n", stderr)
-                exit(1)
+        if !config.appNames.isEmpty || config.bundleId != nil {
+            var matchedApps: [SCRunningApplication] = []
+
+            // Handle --bundle-id (single app)
+            if let bundleId = config.bundleId {
+                if let app = findApp(in: content.applications, name: nil, bundleId: bundleId) {
+                    matchedApps.append(app)
+                } else {
+                    fputs("Error: No running app matching bundle ID '\(bundleId)'\n", stderr)
+                    fputs("Use --list-apps to see available apps.\n", stderr)
+                    exit(1)
+                }
             }
-            fputs("Capturing from: \(app.applicationName) (\(app.bundleIdentifier))\n", stderr)
+
+            // Handle --app (one or more app names)
+            for name in config.appNames {
+                if let app = findApp(in: content.applications, name: name, bundleId: nil) {
+                    matchedApps.append(app)
+                } else {
+                    fputs("Error: No running app matching '\(name)'\n", stderr)
+                    fputs("Use --list-apps to see available apps.\n", stderr)
+                    exit(1)
+                }
+            }
+
+            for app in matchedApps {
+                fputs("Capturing from: \(app.applicationName) (\(app.bundleIdentifier))\n", stderr)
+            }
             filter = SCContentFilter(
                 display: display,
-                including: [app],
+                including: matchedApps,
                 exceptingWindows: []
             )
         } else {
@@ -362,7 +379,9 @@ Task {
         activeStream = stream
         try await stream.startCapture()
 
-        let target = config.appName ?? config.bundleId ?? "system audio"
+        let target = !config.appNames.isEmpty
+            ? config.appNames.joined(separator: ", ")
+            : config.bundleId ?? "system audio"
         fputs("Recording \(target) to \(config.output)... ", stderr)
         if let dur = config.duration {
             fputs("(\(Int(dur))s)\n", stderr)

@@ -63,14 +63,15 @@ def run_capture(
     duration: float | None = None,
     chunk_seconds: float = 0,
     overlap_seconds: float = 5,
-    app: str | None = None,
+    app: str | list[str] | None = None,
 ) -> subprocess.Popen:
     """Launch the capture binary, returning the Popen handle.
 
     In chunked mode, chunk file paths are emitted to stdout (one per line).
     Status messages go to stderr.
 
-    If `app` is specified, captures audio only from that app (name substring match).
+    If `app` is specified (string or list of strings), captures audio only from
+    those app(s) (name substring match).
     """
     binary = ensure_capture_binary()
     args = [str(binary), "--output", str(output_path)]
@@ -81,6 +82,10 @@ def run_capture(
         args.extend(["--chunk-seconds", str(chunk_seconds)])
         args.extend(["--overlap-seconds", str(overlap_seconds)])
     if app is not None:
-        args.extend(["--app", app])
+        if isinstance(app, list):
+            for a in app:
+                args.extend(["--app", a])
+        else:
+            args.extend(["--app", app])
 
     return subprocess.Popen(args, stdout=subprocess.PIPE, stderr=None)

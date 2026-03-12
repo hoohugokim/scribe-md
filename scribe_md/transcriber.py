@@ -4,16 +4,32 @@ from pathlib import Path
 
 from .utils import log
 
+MODEL_PRESETS = {
+    "tiny": "mlx-community/whisper-tiny-mlx",
+    "base": "mlx-community/whisper-base-mlx",
+    "small": "mlx-community/whisper-small-mlx",
+    "medium": "mlx-community/whisper-medium-mlx",
+    "large": "mlx-community/whisper-large-v3-mlx",
+    "large-v3": "mlx-community/whisper-large-v3-mlx",
+    "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
+}
+DEFAULT_MODEL = "large-v3"
+
+
+def resolve_model(model: str) -> str:
+    """Resolve a model preset name or full path to a HF repo path."""
+    return MODEL_PRESETS.get(model, model)
+
 
 def transcribe_audio(
     audio_path: Path,
-    model: str = "mlx-community/whisper-large-v3-mlx",
+    model: str = DEFAULT_MODEL,
     language: str | None = None,
 ) -> dict:
     """Transcribe a single audio file, returning the raw mlx-whisper result."""
     import mlx_whisper
 
-    kwargs = {"path_or_hf_repo": model}
+    kwargs = {"path_or_hf_repo": resolve_model(model)}
     if language:
         kwargs["language"] = language
 

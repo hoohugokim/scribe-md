@@ -82,10 +82,10 @@ scribe-md/
 - `scribe-md list-apps` subcommand and `scribe-md live --app <name>` in Python CLI
 - App name matching: exact match first, then case-insensitive substring
 
-### 3.2 Multi-app capture
-- Support `--app "Zoom" --app "Chrome"` to capture from multiple apps simultaneously
-- Mix audio streams or output separate channels per app
-- Useful for: recording a Zoom meeting while also capturing browser-based presentation audio
+### ~~3.2 Multi-app capture~~ DONE
+- ~~Support `--app "Zoom" --app "Chrome"` to capture from multiple apps simultaneously~~
+- `SCContentFilter(display:including:exceptingWindows:[])` with array of matched apps
+- `scribe-md live --app Zoom --app Chrome` (repeatable flag)
 
 ---
 
@@ -133,11 +133,11 @@ scribe-md/
 
 ## Phase 6 — Performance & Model Options
 
-### 6.1 Model management
-- `--model` presets: `tiny`, `base`, `small`, `medium`, `large-v3` (map to mlx-community HF repos)
-- Auto-download on first use with progress bar
-- `--list-models` to show available and downloaded models
-- Recommend `small` for real-time chunked transcription, `large-v3` for offline/URL mode
+### ~~6.1 Model management~~ DONE
+- ~~`--model` presets: `tiny`, `base`, `small`, `medium`, `large-v3` (map to mlx-community HF repos)~~
+- `scribe-md list-models` subcommand shows all presets with default marker
+- `resolve_model()` maps short names to full HF repo paths
+- Default: `large-v3` (mlx-community/whisper-large-v3-mlx)
 
 ### 6.2 Parallel chunk transcription
 - Current chunked pipeline is sequential (transcribe chunk N while recording chunk N+1)
@@ -162,7 +162,9 @@ scribe-md/
 | ~~P1~~ | ~~2.2 Long video chunking~~ | ~~Medium~~ | DONE |
 | P1 | 4.3 Obsidian integration | Small | |
 | ~~P2~~ | ~~3.1 Per-app capture~~ | ~~Medium~~ | DONE |
+| ~~P2~~ | ~~3.2 Multi-app capture~~ | ~~Small~~ | DONE |
 | ~~P2~~ | ~~5.1 Python CLI rewrite~~ | ~~Medium~~ | DONE |
+| ~~P2~~ | ~~6.1 Model management~~ | ~~Small~~ | DONE |
 | P2 | 6.3 Incremental output | Small | |
 | P3 | 4.1 Speaker diarization | Large | |
 | P3 | 4.4 LLM post-processing | Medium | |

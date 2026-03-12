@@ -10,6 +10,7 @@ import typer
 from rich.console import Console
 
 from . import audio, capture, downloader, merger, transcriber
+from .transcriber import DEFAULT_MODEL, MODEL_PRESETS
 from .utils import log, sanitize_filename
 
 app = typer.Typer(
@@ -96,7 +97,8 @@ def file(
     output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output markdown path"),
     language: Optional[str] = typer.Option(None, "--language", "-l", help="Language code (en, ko, etc.)"),
     model: str = typer.Option(
-        "mlx-community/whisper-large-v3-mlx", "--model", "-m", help="Whisper model",
+        DEFAULT_MODEL, "--model", "-m",
+        help="Whisper model name or preset (tiny, base, small, medium, large-v3)",
     ),
     timestamps: bool = typer.Option(True, "--timestamps/--no-timestamps", "-t/-T", help="Include timestamps"),
     chunk_seconds: float = typer.Option(
@@ -138,7 +140,8 @@ def url(
     output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output markdown path"),
     language: Optional[str] = typer.Option(None, "--language", "-l", help="Language code (en, ko, etc.)"),
     model: str = typer.Option(
-        "mlx-community/whisper-large-v3-mlx", "--model", "-m", help="Whisper model",
+        DEFAULT_MODEL, "--model", "-m",
+        help="Whisper model name or preset (tiny, base, small, medium, large-v3)",
     ),
     timestamps: bool = typer.Option(True, "--timestamps/--no-timestamps", "-t/-T", help="Include timestamps"),
     chunk_seconds: float = typer.Option(
@@ -220,7 +223,8 @@ def live(
     duration: Optional[float] = typer.Option(None, "--duration", "-d", help="Recording duration (seconds)"),
     language: Optional[str] = typer.Option(None, "--language", "-l", help="Language code (en, ko, etc.)"),
     model: str = typer.Option(
-        "mlx-community/whisper-large-v3-mlx", "--model", "-m", help="Whisper model",
+        DEFAULT_MODEL, "--model", "-m",
+        help="Whisper model name or preset (tiny, base, small, medium, large-v3)",
     ),
     timestamps: bool = typer.Option(False, "--timestamps/--no-timestamps", "-t/-T", help="Include timestamps"),
     chunk_seconds: float = typer.Option(
@@ -228,16 +232,18 @@ def live(
     ),
     overlap_seconds: float = typer.Option(5, "--overlap-seconds", help="Overlap between chunks"),
     keep_audio: bool = typer.Option(False, "--keep-audio", help="Keep intermediate WAV files"),
-    app_name: Optional[str] = typer.Option(None, "--app", "-a", help="Capture from a specific app (name substring)"),
+    app_name: Optional[list[str]] = typer.Option(None, "--app", "-a", help="Capture from specific app(s) (repeatable)"),
 ) -> None:
     """Capture and transcribe system audio in real-time."""
+    # typer gives [] instead of None for empty list options
+    apps = app_name if app_name else None
     if chunk_seconds > 0:
         _live_chunked(
             output, duration, language, model, timestamps,
-            chunk_seconds, overlap_seconds, keep_audio, app_name,
+            chunk_seconds, overlap_seconds, keep_audio, apps,
         )
     else:
-        _live_single(output, duration, language, model, timestamps, keep_audio, app_name)
+        _live_single(output, duration, language, model, timestamps, keep_audio, apps)
 
 
 def _live_single(
@@ -247,7 +253,7 @@ def _live_single(
     model: str,
     timestamps: bool,
     keep_audio: bool,
-    app: str | None = None,
+    app: str | list[str] | None = None,
 ) -> None:
     """Single-file live capture pipeline."""
     with tempfile.TemporaryDirectory(prefix="scribe-md-live-") as tmp:
@@ -303,7 +309,7 @@ def _live_chunked(
     chunk_seconds: float,
     overlap_seconds: float,
     keep_audio: bool,
-    app: str | None = None,
+    app: str | list[str] | None = None,
 ) -> None:
     """Chunked live capture pipeline with concurrent transcription."""
     with tempfile.TemporaryDirectory(prefix="scribe-md-chunks-") as tmp:
@@ -398,8 +404,19 @@ def _live_chunked(
 
 
 # ---------------------------------------------------------------------------
-# scribe-md list-apps
+# scribe-md list-models / list-apps
 # ---------------------------------------------------------------------------
+
+
+@app.command("list-models")
+def list_models() -> None:
+    """List available Whisper model presets."""
+    console.print(f"{'Preset':<20} HF Repo Path")
+    console.print(f"{'─' * 20} {'─' * 50}")
+    for name, path in MODEL_PRESETS.items():
+        marker = " *" if name == DEFAULT_MODEL else ""
+        console.print(f"{name:<20} {path}{marker}")
+    console.print(f"\n[dim]* = default model ({DEFAULT_MODEL})[/dim]")
 
 
 @app.command("list-apps")
