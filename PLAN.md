@@ -103,12 +103,11 @@ scribe-md/
 - ~~Sentence boundary detection~~ — `_find_sentence_boundary()` prefers sentence-ending punctuation in overlap regions
 - ~~Configurable timestamp granularity~~ — `--timestamp-mode segment|paragraph|minute|none`
 
-### 4.3 Obsidian integration
-- `--obsidian-vault <path>` flag: write output directly to vault
-- YAML frontmatter: date, source (app name / URL), duration, language, model
-- Wikilink format for cross-referencing
-- Daily note append mode: add transcription to today's daily note
-- Template support: user-defined Markdown template for output structure
+### ~~4.3 Obsidian integration~~ DONE
+- ~~`--vault <path>` flag: write output directly to vault~~
+- ~~YAML frontmatter: date, source, duration, language, model, tags~~
+- ~~Daily note append mode: `--daily-note` appends `## Transcription (HH:MM)` section~~
+- `--frontmatter/--no-frontmatter` flag (default: on when vault is set)
 
 ### 4.4 Post-processing with LLM (optional)
 - `--summarize` flag: pipe transcription through a local LLM (e.g., mlx-lm) for summarization
@@ -146,10 +145,11 @@ scribe-md/
 - For offline mode (yt-dlp / existing file): parallelize transcription across chunks
 - Limit concurrency to avoid ANE contention (2-3 parallel workers max)
 
-### 6.3 Incremental output
-- In chunked mode, append to `.md` file as each chunk is transcribed (not just at the end)
-- User sees results in real-time (tail -f or Obsidian auto-refresh)
-- Final merge pass to clean up overlap artifacts
+### ~~6.3 Incremental output~~ DONE
+- ~~In chunked mode, append to `.md` file as each chunk is transcribed~~
+- ~~User sees results in real-time (tail -f or Obsidian auto-refresh)~~
+- ~~Final merge pass overwrites with clean deduped result~~
+- `--incremental/--no-incremental` flag (default: on for live, off for file/url)
 
 ---
 
@@ -163,14 +163,14 @@ scribe-md/
 | ~~P1~~ | ~~1.3 Silence detection~~ | ~~Small~~ | DONE |
 | ~~P1~~ | ~~1.4 Error handling~~ | ~~Small~~ | DONE |
 | ~~P1~~ | ~~2.2 Long video chunking~~ | ~~Medium~~ | DONE |
-| P1 | 4.3 Obsidian integration | Small | |
+| ~~P1~~ | ~~4.3 Obsidian integration~~ | ~~Small~~ | DONE |
 | ~~P2~~ | ~~3.1 Per-app capture~~ | ~~Medium~~ | DONE |
 | ~~P2~~ | ~~3.2 Multi-app capture~~ | ~~Small~~ | DONE |
 | ~~P2~~ | ~~4.2 Intelligent formatting~~ | ~~Small~~ | DONE |
 | ~~P2~~ | ~~5.1 Python CLI rewrite~~ | ~~Medium~~ | DONE |
 | ~~P2~~ | ~~5.2 Configuration file~~ | ~~Small~~ | DONE |
 | ~~P2~~ | ~~6.1 Model management~~ | ~~Small~~ | DONE |
-| P2 | 6.3 Incremental output | Small | |
+| ~~P2~~ | ~~6.3 Incremental output~~ | ~~Small~~ | DONE |
 | P3 | 4.1 Speaker diarization | Large | |
 | P3 | 4.4 LLM post-processing | Medium | |
 | P3 | 6.2 Parallel transcription | Medium | |

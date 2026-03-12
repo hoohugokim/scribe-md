@@ -9,7 +9,7 @@ from typing import Optional
 import typer
 from rich.console import Console
 
-from . import audio, capture, downloader, merger, transcriber
+from . import audio, capture, downloader, merger, obsidian, transcriber
 from .audio import AudioConversionError, DiskFullError
 from .capture import CaptureError
 from .config import (
@@ -123,8 +123,90 @@ def _resolve_timestamp_flags(
 
 
 # ---------------------------------------------------------------------------
+# Obsidian output helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_obsidian_metadata(
+    source: str,
+    duration: float | None,
+    language: str | None,
+    model: str,
+) -> dict:
+    """Build an Obsidian frontmatter metadata dict."""
+    from datetime import datetime
+
+    meta: dict = {
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "source": source,
+        "model": model,
+        "tags": ["transcription"],
+    }
+    if duration is not None:
+        meta["duration"] = obsidian.format_duration(duration)
+    if language:
+        meta["language"] = language
+    return meta
+
+
+def _write_obsidian_output(
+    text: str,
+    output: Path,
+    vault: str,
+    daily_note: bool,
+    frontmatter: bool,
+    metadata: dict,
+    daily_note_folder: str,
+) -> None:
+    """Write transcription output with Obsidian integration.
+
+    Handles three modes:
+    - daily_note=True: append to today's daily note in the vault
+    - frontmatter=True: write to output path with YAML frontmatter
+    - fallback: write plain text (no Obsidian features)
+    """
+    vault_path = Path(vault).expanduser().resolve() if vault else None
+
+    if daily_note and vault_path:
+        path = obsidian.append_to_daily_note(
+            vault_path, daily_note_folder, text, metadata,
+        )
+        log(f"Appended to daily note: {path}")
+        return
+
+    if frontmatter:
+        # If vault is set and output is just a filename, resolve within vault
+        if vault_path and not output.is_absolute():
+            output = obsidian.resolve_vault_output(vault_path, output.name)
+        obsidian.write_with_frontmatter(output, text, metadata)
+        log(f"Wrote {output} (with frontmatter)")
+        return
+
+    # Plain write (no Obsidian)
+    if vault_path and not output.is_absolute():
+        output = obsidian.resolve_vault_output(vault_path, output.name)
+        output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(text, encoding="utf-8")
+    log(f"Wrote {output}")
+
+
+# ---------------------------------------------------------------------------
 # Shared transcription pipeline
 # ---------------------------------------------------------------------------
+
+
+def _append_incremental(output: Path, segments: list[dict]) -> None:
+    """Append a chunk's raw transcription text to the output file.
+
+    This provides real-time incremental output so users can watch progress
+    with ``tail -f`` or via Obsidian's auto-refresh.  The final merge pass
+    will overwrite this draft with properly deduped text.
+    """
+    if not segments:
+        return
+    text = " ".join(seg["text"].strip() for seg in segments)
+    with open(output, "a", encoding="utf-8") as f:
+        f.write(text + "\n\n")
 
 
 def _transcribe_single(
@@ -136,8 +218,13 @@ def _transcribe_single(
     *,
     timestamp_mode: str = "segment",
     paragraph_gap: float = 2.0,
+    write_fn=None,
 ) -> None:
-    """Transcribe a single audio file and write Markdown output."""
+    """Transcribe a single audio file and write Markdown output.
+
+    If *write_fn* is provided it is called as ``write_fn(text, output)``
+    instead of writing directly to *output*.
+    """
     if audio.is_silent(audio_path):
         log(f"Skipping {audio_path.name}: audio is silent")
         return
@@ -153,8 +240,11 @@ def _transcribe_single(
         [segments], chunk_duration=0, overlap=0, timestamps=timestamps,
         timestamp_mode=timestamp_mode, paragraph_gap=paragraph_gap,
     )
-    output.write_text(text, encoding="utf-8")
-    log(f"Wrote {output}")
+    if write_fn is not None:
+        write_fn(text, output)
+    else:
+        output.write_text(text, encoding="utf-8")
+        log(f"Wrote {output}")
 
 
 def _transcribe_chunked(
@@ -168,13 +258,27 @@ def _transcribe_chunked(
     *,
     timestamp_mode: str = "segment",
     paragraph_gap: float = 2.0,
+    incremental: bool = False,
+    write_fn=None,
 ) -> None:
-    """Split a long audio file into chunks, transcribe each, and merge."""
+    """Split a long audio file into chunks, transcribe each, and merge.
+
+    When *incremental* is True, each chunk's preliminary transcription is
+    appended to the output file as soon as it completes.  The final merge
+    pass then overwrites the file with the properly deduped result.
+
+    If *write_fn* is provided it is called as ``write_fn(text, output)``
+    instead of writing directly to *output*.
+    """
     with tempfile.TemporaryDirectory(prefix="scribe-md-chunks-") as tmp:
         tmp_dir = Path(tmp)
 
         log(f"Splitting into {chunk_seconds}s chunks...")
         chunks = audio.split_audio(audio_path, tmp_dir, chunk_seconds, overlap_seconds)
+
+        # Clear the output file before writing incremental results
+        if incremental:
+            output.write_text("", encoding="utf-8")
 
         all_segments: list[list[dict]] = []
         for i, chunk_path in enumerate(chunks):
@@ -184,7 +288,11 @@ def _transcribe_chunked(
                 all_segments.append([])
                 continue
             result = transcriber.transcribe_audio(chunk_path, model=model, language=language)
-            all_segments.append(transcriber.extract_segments(result))
+            segments = transcriber.extract_segments(result)
+            all_segments.append(segments)
+
+            if incremental:
+                _append_incremental(output, segments)
 
         text = merger.merge_segments(
             all_segments,
@@ -194,8 +302,11 @@ def _transcribe_chunked(
             timestamp_mode=timestamp_mode,
             paragraph_gap=paragraph_gap,
         )
-        output.write_text(text, encoding="utf-8")
-        log(f"Wrote {output} ({len(chunks)} chunks merged)")
+        if write_fn is not None:
+            write_fn(text, output)
+        else:
+            output.write_text(text, encoding="utf-8")
+            log(f"Wrote {output} ({len(chunks)} chunks merged)")
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +336,13 @@ def file(
         None, "--chunk-seconds", help="Chunk duration for long files (seconds)",
     ),
     overlap_seconds: Optional[float] = typer.Option(None, "--overlap-seconds", help="Overlap between chunks"),
+    incremental: Optional[bool] = typer.Option(
+        None, "--incremental/--no-incremental",
+        help="Write chunks to output file incrementally (default: off)",
+    ),
+    vault: Optional[str] = typer.Option(None, "--vault", help="Obsidian vault path (overrides config)"),
+    daily_note: bool = typer.Option(False, "--daily-note", help="Append to today's daily note"),
+    frontmatter: Optional[bool] = typer.Option(None, "--frontmatter/--no-frontmatter", help="Include YAML frontmatter (default: on when vault is set)"),
 ) -> None:
     """Transcribe an existing audio file to Markdown."""
     if not audio_file.exists():
@@ -243,10 +361,18 @@ def file(
     r_paragraph_gap = _resolve(paragraph_gap, cfg.paragraph_gap)
     r_chunk_seconds = _resolve(chunk_seconds, cfg.chunk_seconds)
     r_overlap_seconds = _resolve(overlap_seconds, cfg.overlap_seconds)
+    r_incremental = _resolve(incremental, cfg.incremental)
+    r_vault = _resolve(vault, cfg.vault)
+    r_daily_note_folder = cfg.daily_note_folder
+
+    # Frontmatter defaults to True when vault is set
+    r_frontmatter = frontmatter if frontmatter is not None else bool(r_vault)
 
     _validate_timestamp_mode(r_timestamp_mode)
     ts, ts_mode = _resolve_timestamp_flags(r_timestamps, r_timestamp_mode)
     out = output or audio_file.with_suffix(".md")
+
+    source = f"file: {audio_file.name}"
 
     try:
         with tempfile.TemporaryDirectory(prefix="scribe-md-") as tmp:
@@ -255,17 +381,31 @@ def file(
             log("Converting to 16kHz mono...")
             audio.convert_to_16k_mono(audio_file, converted)
 
-            duration = audio.get_duration(converted)
-            if duration > r_chunk_seconds:
+            file_duration = audio.get_duration(converted)
+            metadata = _build_obsidian_metadata(
+                source=source, duration=file_duration,
+                language=r_language, model=r_model,
+            )
+
+            def write_fn(text: str, output_path: Path) -> None:
+                _write_obsidian_output(
+                    text, output_path, r_vault, daily_note, r_frontmatter,
+                    metadata, r_daily_note_folder,
+                )
+
+            if file_duration > r_chunk_seconds:
                 _transcribe_chunked(
                     converted, out, r_model, r_language, ts,
                     r_chunk_seconds, r_overlap_seconds,
                     timestamp_mode=ts_mode, paragraph_gap=r_paragraph_gap,
+                    incremental=r_incremental,
+                    write_fn=write_fn,
                 )
             else:
                 _transcribe_single(
                     converted, out, r_model, r_language, ts,
                     timestamp_mode=ts_mode, paragraph_gap=r_paragraph_gap,
+                    write_fn=write_fn,
                 )
     except AudioConversionError as e:
         console.print(f"[red]Error:[/red] {e}")
@@ -313,6 +453,13 @@ def url(
         None, "--chunk-seconds", help="Chunk duration for long videos (seconds)",
     ),
     overlap_seconds: Optional[float] = typer.Option(None, "--overlap-seconds", help="Overlap between chunks"),
+    incremental: Optional[bool] = typer.Option(
+        None, "--incremental/--no-incremental",
+        help="Write chunks to output file incrementally (default: off)",
+    ),
+    vault: Optional[str] = typer.Option(None, "--vault", help="Obsidian vault path (overrides config)"),
+    daily_note: bool = typer.Option(False, "--daily-note", help="Append to today's daily note"),
+    frontmatter: Optional[bool] = typer.Option(None, "--frontmatter/--no-frontmatter", help="Include YAML frontmatter (default: on when vault is set)"),
 ) -> None:
     """Transcribe audio from a YouTube URL to Markdown."""
     cfg = load_config()
@@ -323,6 +470,12 @@ def url(
     r_paragraph_gap = _resolve(paragraph_gap, cfg.paragraph_gap)
     r_chunk_seconds = _resolve(chunk_seconds, cfg.chunk_seconds)
     r_overlap_seconds = _resolve(overlap_seconds, cfg.overlap_seconds)
+    r_incremental = _resolve(incremental, cfg.incremental)
+    r_vault = _resolve(vault, cfg.vault)
+    r_daily_note_folder = cfg.daily_note_folder
+
+    # Frontmatter defaults to True when vault is set
+    r_frontmatter = frontmatter if frontmatter is not None else bool(r_vault)
 
     _validate_timestamp_mode(r_timestamp_mode)
     ts, ts_mode = _resolve_timestamp_flags(r_timestamps, r_timestamp_mode)
@@ -344,6 +497,10 @@ def url(
                         timestamps=ts, chunk_seconds=r_chunk_seconds,
                         overlap_seconds=r_overlap_seconds,
                         timestamp_mode=ts_mode, paragraph_gap=r_paragraph_gap,
+                        incremental=r_incremental,
+                        vault=r_vault, daily_note=daily_note,
+                        frontmatter=r_frontmatter,
+                        daily_note_folder=r_daily_note_folder,
                     )
                 except DiskFullError:
                     raise  # Disk-full is fatal even for playlists
@@ -355,6 +512,10 @@ def url(
                 timestamps=ts, chunk_seconds=r_chunk_seconds,
                 overlap_seconds=r_overlap_seconds,
                 timestamp_mode=ts_mode, paragraph_gap=r_paragraph_gap,
+                incremental=r_incremental,
+                vault=r_vault, daily_note=daily_note,
+                frontmatter=r_frontmatter,
+                daily_note_folder=r_daily_note_folder,
             )
     except (AudioConversionError, TranscriptionError) as e:
         console.print(f"[red]Error:[/red] {e}")
@@ -383,6 +544,11 @@ def _transcribe_url(
     *,
     timestamp_mode: str = "segment",
     paragraph_gap: float = 2.0,
+    incremental: bool = False,
+    vault: str = "",
+    daily_note: bool = False,
+    frontmatter: bool = False,
+    daily_note_folder: str = "Daily Notes",
 ) -> None:
     """Download and transcribe a single video URL."""
     with tempfile.TemporaryDirectory(prefix="scribe-md-dl-") as tmp:
@@ -402,16 +568,31 @@ def _transcribe_url(
         duration = audio.get_duration(converted)
         log(f"Duration: {duration / 60:.1f} min")
 
+        source = f"YouTube: {title}"
+        metadata = _build_obsidian_metadata(
+            source=source, duration=duration,
+            language=language, model=model,
+        )
+
+        def write_fn(text: str, output_path: Path) -> None:
+            _write_obsidian_output(
+                text, output_path, vault, daily_note, frontmatter,
+                metadata, daily_note_folder,
+            )
+
         if duration > chunk_seconds:
             _transcribe_chunked(
                 converted, out, model, language, timestamps,
                 chunk_seconds, overlap_seconds,
                 timestamp_mode=timestamp_mode, paragraph_gap=paragraph_gap,
+                incremental=incremental,
+                write_fn=write_fn,
             )
         else:
             _transcribe_single(
                 converted, out, model, language, timestamps,
                 timestamp_mode=timestamp_mode, paragraph_gap=paragraph_gap,
+                write_fn=write_fn,
             )
 
 
@@ -444,6 +625,13 @@ def live(
     overlap_seconds: Optional[float] = typer.Option(None, "--overlap-seconds", help="Overlap between chunks"),
     keep_audio: Optional[bool] = typer.Option(None, "--keep-audio", help="Keep intermediate WAV files"),
     app_name: Optional[list[str]] = typer.Option(None, "--app", "-a", help="Capture from specific app(s) (repeatable)"),
+    incremental: Optional[bool] = typer.Option(
+        None, "--incremental/--no-incremental",
+        help="Write chunks to output file incrementally (default: on for live)",
+    ),
+    vault: Optional[str] = typer.Option(None, "--vault", help="Obsidian vault path (overrides config)"),
+    daily_note: bool = typer.Option(False, "--daily-note", help="Append to today's daily note"),
+    frontmatter: Optional[bool] = typer.Option(None, "--frontmatter/--no-frontmatter", help="Include YAML frontmatter (default: on when vault is set)"),
 ) -> None:
     """Capture and transcribe system audio in real-time."""
     cfg = load_config()
@@ -455,24 +643,49 @@ def live(
     r_chunk_seconds = _resolve(chunk_seconds, 0)  # live default: no chunking
     r_overlap_seconds = _resolve(overlap_seconds, cfg.overlap_seconds)
     r_keep_audio = _resolve(keep_audio, cfg.keep_audio)
+    r_incremental = _resolve(incremental, cfg.live_incremental)
+    r_vault = _resolve(vault, cfg.vault)
+    r_daily_note_folder = cfg.daily_note_folder
     r_output = output or Path("transcription.md")
+
+    # Frontmatter defaults to True when vault is set
+    r_frontmatter = frontmatter if frontmatter is not None else bool(r_vault)
 
     _validate_timestamp_mode(r_timestamp_mode)
     ts, ts_mode = _resolve_timestamp_flags(r_timestamps, r_timestamp_mode)
 
-    # typer gives [] instead of None for empty list options
+    # Build source and metadata for Obsidian
     apps = app_name if app_name else None
+    if apps:
+        source = f"live: {', '.join(apps)}"
+    else:
+        source = "live: system audio"
+
+    metadata = _build_obsidian_metadata(
+        source=source, duration=None,
+        language=r_language, model=r_model,
+    )
+
+    def write_fn(text: str, output_path: Path) -> None:
+        _write_obsidian_output(
+            text, output_path, r_vault, daily_note, r_frontmatter,
+            metadata, r_daily_note_folder,
+        )
+
     try:
         if r_chunk_seconds > 0:
             _live_chunked(
                 r_output, duration, r_language, r_model, ts,
                 r_chunk_seconds, r_overlap_seconds, r_keep_audio, apps,
                 timestamp_mode=ts_mode, paragraph_gap=r_paragraph_gap,
+                incremental=r_incremental,
+                write_fn=write_fn,
             )
         else:
             _live_single(
                 r_output, duration, r_language, r_model, ts, r_keep_audio, apps,
                 timestamp_mode=ts_mode, paragraph_gap=r_paragraph_gap,
+                write_fn=write_fn,
             )
     except CaptureError as e:
         console.print(f"[red]Error:[/red] {e}")
@@ -504,6 +717,7 @@ def _live_single(
     *,
     timestamp_mode: str = "segment",
     paragraph_gap: float = 2.0,
+    write_fn=None,
 ) -> None:
     """Single-file live capture pipeline."""
     with tempfile.TemporaryDirectory(prefix="scribe-md-live-") as tmp:
@@ -544,6 +758,7 @@ def _live_single(
         _transcribe_single(
             converted, output, model, language, timestamps,
             timestamp_mode=timestamp_mode, paragraph_gap=paragraph_gap,
+            write_fn=write_fn,
         )
 
         if keep_audio:
@@ -566,6 +781,8 @@ def _live_chunked(
     *,
     timestamp_mode: str = "segment",
     paragraph_gap: float = 2.0,
+    incremental: bool = False,
+    write_fn=None,
 ) -> None:
     """Chunked live capture pipeline with concurrent transcription."""
     with tempfile.TemporaryDirectory(prefix="scribe-md-chunks-") as tmp:
@@ -592,6 +809,10 @@ def _live_chunked(
 
         chunk_jsons: list[Path] = []
         chunk_idx = 0
+
+        # Clear the output file before writing incremental results
+        if incremental:
+            output.write_text("", encoding="utf-8")
 
         try:
             # Read chunk paths from capture's stdout
@@ -622,6 +843,9 @@ def _live_chunked(
                         encoding="utf-8",
                     )
                     chunk_jsons.append(chunk_json)
+
+                    if incremental:
+                        _append_incremental(output, segments)
                 except DiskFullError:
                     raise  # Disk-full is fatal — stop immediately
                 except Exception as e:
@@ -651,8 +875,11 @@ def _live_chunked(
             timestamp_mode=timestamp_mode,
             paragraph_gap=paragraph_gap,
         )
-        output.write_text(text, encoding="utf-8")
-        log(f"Done: {output} ({len(chunk_jsons)} chunks)")
+        if write_fn is not None:
+            write_fn(text, output)
+        else:
+            output.write_text(text, encoding="utf-8")
+            log(f"Done: {output} ({len(chunk_jsons)} chunks)")
 
         if keep_audio:
             log(f"Audio chunks saved: {tmp_dir}")

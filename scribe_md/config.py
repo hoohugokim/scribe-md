@@ -33,13 +33,18 @@ timestamp_mode = "segment" # segment, paragraph, minute, or none
 paragraph_gap = 2.0       # seconds of silence to trigger a paragraph break
 chunk_seconds = 1800
 overlap_seconds = 5
+incremental = false       # append chunks to output file as they complete
 
 [output]
 directory = "."           # default output directory
-# vault = "~/Documents/Obsidian/Vault"  # for future Obsidian integration
+
+[obsidian]
+vault = ""                # path to Obsidian vault (empty = disabled)
+daily_note_folder = "Daily Notes"  # subfolder for daily notes within vault
 
 [live]
 keep_audio = false
+incremental = true        # live mode defaults to incremental output
 """
 
 
@@ -55,12 +60,18 @@ class ScribeMdConfig:
     paragraph_gap: float = 2.0
     chunk_seconds: float = 1800
     overlap_seconds: float = 5
+    incremental: bool = False
 
     # [output]
     output_directory: str = "."
 
+    # [obsidian]
+    vault: str = ""
+    daily_note_folder: str = "Daily Notes"
+
     # [live]
     keep_audio: bool = False
+    live_incremental: bool = True
 
     # Metadata — which files contributed to this config
     _sources: list[str] = field(default_factory=list, repr=False)
@@ -85,6 +96,7 @@ def _apply_toml(cfg: ScribeMdConfig, data: dict, source: str) -> None:
     """Merge a parsed TOML dict into an existing config, mutating *cfg*."""
     defaults = data.get("defaults", {})
     output = data.get("output", {})
+    obsidian = data.get("obsidian", {})
     live = data.get("live", {})
 
     if "model" in defaults:
@@ -101,12 +113,21 @@ def _apply_toml(cfg: ScribeMdConfig, data: dict, source: str) -> None:
         cfg.timestamp_mode = str(defaults["timestamp_mode"])
     if "paragraph_gap" in defaults:
         cfg.paragraph_gap = float(defaults["paragraph_gap"])
+    if "incremental" in defaults:
+        cfg.incremental = bool(defaults["incremental"])
 
     if "directory" in output:
         cfg.output_directory = str(output["directory"])
 
+    if "vault" in obsidian:
+        cfg.vault = str(obsidian["vault"])
+    if "daily_note_folder" in obsidian:
+        cfg.daily_note_folder = str(obsidian["daily_note_folder"])
+
     if "keep_audio" in live:
         cfg.keep_audio = bool(live["keep_audio"])
+    if "incremental" in live:
+        cfg.live_incremental = bool(live["incremental"])
 
     cfg._sources.append(source)
 
@@ -162,12 +183,18 @@ def config_as_toml(cfg: ScribeMdConfig) -> str:
         f"paragraph_gap = {cfg.paragraph_gap}",
         f"chunk_seconds = {cfg.chunk_seconds}",
         f"overlap_seconds = {cfg.overlap_seconds}",
+        f"incremental = {'true' if cfg.incremental else 'false'}",
         "",
         "[output]",
         f'directory = "{cfg.output_directory}"',
         "",
+        "[obsidian]",
+        f'vault = "{cfg.vault}"',
+        f'daily_note_folder = "{cfg.daily_note_folder}"',
+        "",
         "[live]",
         f"keep_audio = {'true' if cfg.keep_audio else 'false'}",
+        f"incremental = {'true' if cfg.live_incremental else 'false'}",
     ]
     return "\n".join(lines) + "\n"
 
