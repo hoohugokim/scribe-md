@@ -15,3 +15,4 @@ ffmpeg = ">=7"
 
 [pypi-dependencies]
 scribe-md = { path = ".", editable = true }
+pytest = ">=9.0.2, <10"

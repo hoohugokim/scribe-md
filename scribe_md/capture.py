@@ -9,6 +9,17 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CAPTURE_DIR = PROJECT_ROOT / "capture"
 CAPTURE_BIN = CAPTURE_DIR / ".build" / "release" / "appaudio-capture"
 
+# Screen Recording permission hint
+_PERMISSION_MSG = (
+    "Screen Recording permission is required.\n"
+    "Grant access in: System Settings > Privacy & Security > Screen Recording\n"
+    "Then restart your terminal and try again."
+)
+
+
+class CaptureError(RuntimeError):
+    """Raised when the audio capture binary fails."""
+
 
 def ensure_capture_binary() -> Path:
     """Build the Swift capture binary if it doesn't exist. Returns the binary path."""
@@ -22,22 +33,59 @@ def ensure_capture_binary() -> Path:
             capture_output=True, check=True,
         )
     except (FileNotFoundError, subprocess.CalledProcessError):
-        raise RuntimeError(
+        raise CaptureError(
             "Swift toolchain not found. Install Xcode Command Line Tools:\n"
             "  xcode-select --install"
         )
 
     log("Building audio capture tool (first run only)...")
-    subprocess.run(
-        ["swift", "build", "-c", "release"],
-        cwd=str(CAPTURE_DIR),
-        check=True,
-    )
+    try:
+        result = subprocess.run(
+            ["swift", "build", "-c", "release"],
+            cwd=str(CAPTURE_DIR),
+            capture_output=True, text=True,
+        )
+    except OSError as e:
+        raise CaptureError(f"Failed to build capture tool: {e}")
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        raise CaptureError(f"Swift build failed (exit {result.returncode}): {stderr}")
 
     if not CAPTURE_BIN.exists():
-        raise RuntimeError(f"Build succeeded but binary not found at {CAPTURE_BIN}")
+        raise CaptureError(f"Build succeeded but binary not found at {CAPTURE_BIN}")
 
     return CAPTURE_BIN
+
+
+def _check_capture_permission(binary: Path, timeout: float = 10.0) -> None:
+    """Run a quick --list-apps probe to verify Screen Recording permission.
+
+    ScreenCaptureKit may silently hang or return empty results when the
+    permission has not been granted. We detect that and give the user a
+    clear message.
+    """
+    try:
+        result = subprocess.run(
+            [str(binary), "--list-apps"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise CaptureError(
+            f"Screen Recording permission check timed out after {timeout:.0f}s.\n"
+            + _PERMISSION_MSG
+        )
+    except OSError as e:
+        raise CaptureError(f"Failed to run capture binary: {e}")
+
+    # The Swift binary writes "Error:" to stderr on permission failure
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        if "error" in stderr.lower():
+            raise CaptureError(
+                f"Capture binary failed: {stderr}\n" + _PERMISSION_MSG
+            )
+        raise CaptureError(f"Capture binary failed (exit {result.returncode}): {stderr}")
 
 
 def list_apps() -> list[dict]:
@@ -46,10 +94,24 @@ def list_apps() -> list[dict]:
     Returns a list of dicts with 'name' and 'bundle_id' keys, sorted by name.
     """
     binary = ensure_capture_binary()
-    result = subprocess.run(
-        [str(binary), "--list-apps"],
-        capture_output=True, text=True, check=True,
-    )
+    try:
+        result = subprocess.run(
+            [str(binary), "--list-apps"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        raise CaptureError(
+            "Listing apps timed out. " + _PERMISSION_MSG
+        )
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        if "error" in stderr.lower():
+            raise CaptureError(
+                f"Cannot list apps: {stderr}\n" + _PERMISSION_MSG
+            )
+        raise CaptureError(f"list-apps failed (exit {result.returncode}): {stderr}")
+
     apps = []
     for line in result.stdout.strip().split("\n"):
         if "\t" in line:
@@ -72,8 +134,14 @@ def run_capture(
 
     If `app` is specified (string or list of strings), captures audio only from
     those app(s) (name substring match).
+
+    Raises CaptureError if Screen Recording permission is not granted.
     """
     binary = ensure_capture_binary()
+
+    # Verify Screen Recording permission before starting a long capture
+    _check_capture_permission(binary)
+
     args = [str(binary), "--output", str(output_path)]
 
     if duration is not None:
@@ -88,4 +156,7 @@ def run_capture(
         else:
             args.extend(["--app", app])
 
-    return subprocess.Popen(args, stdout=subprocess.PIPE, stderr=None)
+    try:
+        return subprocess.Popen(args, stdout=subprocess.PIPE, stderr=None)
+    except OSError as e:
+        raise CaptureError(f"Failed to start capture: {e}")

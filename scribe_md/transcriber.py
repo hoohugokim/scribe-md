@@ -21,12 +21,34 @@ def resolve_model(model: str) -> str:
     return MODEL_PRESETS.get(model, model)
 
 
+class TranscriptionError(RuntimeError):
+    """Raised when transcription fails due to invalid input or runtime errors."""
+
+
 def transcribe_audio(
     audio_path: Path,
     model: str = DEFAULT_MODEL,
     language: str | None = None,
 ) -> dict:
     """Transcribe a single audio file, returning the raw mlx-whisper result."""
+    # Validate input file
+    if not audio_path.exists():
+        raise TranscriptionError(f"Audio file not found: {audio_path}")
+
+    file_size = audio_path.stat().st_size
+    if file_size == 0:
+        raise TranscriptionError(
+            f"Audio file is empty (0 bytes): {audio_path.name}. "
+            "The recording may have failed or been interrupted."
+        )
+
+    # A valid WAV header is at least 44 bytes
+    if file_size < 44:
+        raise TranscriptionError(
+            f"Audio file is too small ({file_size} bytes): {audio_path.name}. "
+            "The file may be corrupt."
+        )
+
     import mlx_whisper
 
     kwargs = {"path_or_hf_repo": resolve_model(model)}
@@ -34,7 +56,12 @@ def transcribe_audio(
         kwargs["language"] = language
 
     log(f"Transcribing {audio_path.name}...")
-    return mlx_whisper.transcribe(str(audio_path), **kwargs)
+    try:
+        return mlx_whisper.transcribe(str(audio_path), **kwargs)
+    except Exception as e:
+        raise TranscriptionError(
+            f"Transcription failed for {audio_path.name}: {e}"
+        ) from e
 
 
 def extract_segments(

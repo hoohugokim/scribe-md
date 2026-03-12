@@ -21,6 +21,7 @@ scribe-md/
     audio.py                  # ffmpeg helpers, silence detection
     downloader.py             # yt-dlp wrapper
     capture.py                # Swift binary management
+    config.py                 # TOML config loading
     utils.py                  # Shared utilities
   pyproject.toml              # Python package definition
   pixi.toml                   # Dependency management
@@ -46,11 +47,11 @@ scribe-md/
 - Post-transcription: `extract_segments()` filters segments with `no_speech_prob > 0.6`
 - Applied in all pipelines: single-file, chunked, and live chunked
 
-### 1.4 Error handling
-- Validate WAV file size > 0 before transcription
-- Handle ffmpeg conversion failures gracefully
-- Timeout on ScreenCaptureKit permission prompt (inform user to grant access)
-- Handle disk-full scenarios during long recordings
+### ~~1.4 Error handling~~ DONE
+- ~~Validate WAV file size > 0 before transcription~~
+- ~~Handle ffmpeg conversion failures gracefully~~ — `AudioConversionError` with actionable messages
+- ~~Timeout on ScreenCaptureKit permission prompt~~ — `_check_capture_permission()` with 10s timeout
+- ~~Handle disk-full scenarios~~ — `DiskFullError` + `_check_disk_space()` pre-write checks
 
 ---
 
@@ -97,10 +98,10 @@ scribe-md/
 - Especially valuable for meeting transcription
 - Note: may require PyTorch — evaluate Apple Silicon compatibility and model size
 
-### 4.2 Intelligent formatting
-- Paragraph detection: merge segments with short pauses into paragraphs
-- Sentence boundary detection: don't break mid-sentence at chunk boundaries
-- Configurable timestamp granularity: per-segment (default), per-paragraph, per-minute, or none
+### ~~4.2 Intelligent formatting~~ DONE
+- ~~Paragraph detection: merge segments with short pauses into paragraphs~~ — `--paragraph-gap` (default 2.0s)
+- ~~Sentence boundary detection~~ — `_find_sentence_boundary()` prefers sentence-ending punctuation in overlap regions
+- ~~Configurable timestamp granularity~~ — `--timestamp-mode segment|paragraph|minute|none`
 
 ### 4.3 Obsidian integration
 - `--obsidian-vault <path>` flag: write output directly to vault
@@ -124,10 +125,11 @@ scribe-md/
 - Entry point: `pixi run scribe-md` (registered via pyproject.toml `[project.scripts]`)
 - Old `transcribe.sh` and `transcribe.py` deleted
 
-### 5.2 Configuration file
-- `~/.config/scribe-md/config.toml` or project-local `.scribe-md.toml`
-- Default language, model, output directory, Obsidian vault path, chunk settings
-- Override per-invocation with CLI flags
+### ~~5.2 Configuration file~~ DONE
+- ~~`~/.config/scribe-md/config.toml` or project-local `.scribe-md.toml`~~
+- ~~Default language, model, output directory, chunk settings~~
+- ~~Override per-invocation with CLI flags~~
+- `scribe-md config show|path|init` subcommands
 
 ---
 
@@ -159,11 +161,14 @@ scribe-md/
 | ~~P0~~ | ~~1.2 Fix Ctrl+C~~ | ~~Small~~ | DONE |
 | ~~P0~~ | ~~2.1 yt-dlp integration~~ | ~~Small~~ | DONE |
 | ~~P1~~ | ~~1.3 Silence detection~~ | ~~Small~~ | DONE |
+| ~~P1~~ | ~~1.4 Error handling~~ | ~~Small~~ | DONE |
 | ~~P1~~ | ~~2.2 Long video chunking~~ | ~~Medium~~ | DONE |
 | P1 | 4.3 Obsidian integration | Small | |
 | ~~P2~~ | ~~3.1 Per-app capture~~ | ~~Medium~~ | DONE |
 | ~~P2~~ | ~~3.2 Multi-app capture~~ | ~~Small~~ | DONE |
+| ~~P2~~ | ~~4.2 Intelligent formatting~~ | ~~Small~~ | DONE |
 | ~~P2~~ | ~~5.1 Python CLI rewrite~~ | ~~Medium~~ | DONE |
+| ~~P2~~ | ~~5.2 Configuration file~~ | ~~Small~~ | DONE |
 | ~~P2~~ | ~~6.1 Model management~~ | ~~Small~~ | DONE |
 | P2 | 6.3 Incremental output | Small | |
 | P3 | 4.1 Speaker diarization | Large | |
