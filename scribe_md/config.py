@@ -46,6 +46,11 @@ directory = "."           # default output directory
 vault = ""                # path to Obsidian vault (empty = disabled)
 daily_note_folder = "Daily Notes"  # subfolder for daily notes within vault
 
+[diarization]
+diarize = false           # enable speaker diarization (requires pyannote-audio)
+hf_token = ""             # HuggingFace token (or use HF_TOKEN env var)
+num_speakers = 0          # exact speaker count (0 = auto-detect)
+
 [live]
 keep_audio = false
 incremental = true        # live mode defaults to incremental output
@@ -76,6 +81,11 @@ class ScribeMdConfig:
     # [obsidian]
     vault: str = ""
     daily_note_folder: str = "Daily Notes"
+
+    # [diarization]
+    diarize: bool = False
+    hf_token: str = ""
+    num_speakers: int = 0
 
     # [live]
     keep_audio: bool = False
@@ -139,6 +149,14 @@ def _apply_toml(cfg: ScribeMdConfig, data: dict, source: str) -> None:
         cfg.vault = str(obsidian["vault"])
     if "daily_note_folder" in obsidian:
         cfg.daily_note_folder = str(obsidian["daily_note_folder"])
+
+    diarization = data.get("diarization", {})
+    if "diarize" in diarization:
+        cfg.diarize = bool(diarization["diarize"])
+    if "hf_token" in diarization:
+        cfg.hf_token = str(diarization["hf_token"])
+    if "num_speakers" in diarization:
+        cfg.num_speakers = int(diarization["num_speakers"])
 
     if "keep_audio" in live:
         cfg.keep_audio = bool(live["keep_audio"])
@@ -211,6 +229,11 @@ def config_as_toml(cfg: ScribeMdConfig) -> str:
         "[obsidian]",
         f'vault = "{cfg.vault}"',
         f'daily_note_folder = "{cfg.daily_note_folder}"',
+        "",
+        "[diarization]",
+        f"diarize = {'true' if cfg.diarize else 'false'}",
+        f'hf_token = "{cfg.hf_token}"',
+        f"num_speakers = {cfg.num_speakers}",
         "",
         "[live]",
         f"keep_audio = {'true' if cfg.keep_audio else 'false'}",

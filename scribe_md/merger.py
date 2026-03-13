@@ -83,11 +83,14 @@ def merge_segments(
         for seg in segments:
             if idx > 0 and seg["start"] < split_at:
                 continue
-            all_segments.append({
+            flat = {
                 "start": offset + seg["start"],
                 "end": offset + seg["end"],
                 "text": seg["text"],
-            })
+            }
+            if "speaker" in seg:
+                flat["speaker"] = seg["speaker"]
+            all_segments.append(flat)
 
     if not all_segments:
         return ""
@@ -97,12 +100,20 @@ def merge_segments(
         timestamp_mode = "none"
 
     # ── 3. Group segments into paragraphs ──────────────────────────────────
+    # A paragraph break is triggered by either:
+    #   - a silence gap >= paragraph_gap, or
+    #   - a speaker change (when diarization labels are present).
     paragraphs: list[list[dict]] = []
     current_para: list[dict] = [all_segments[0]]
 
     for prev_seg, cur_seg in zip(all_segments, all_segments[1:]):
         gap = cur_seg["start"] - prev_seg["end"]
-        if gap >= paragraph_gap:
+        speaker_changed = (
+            "speaker" in cur_seg
+            and "speaker" in prev_seg
+            and cur_seg["speaker"] != prev_seg["speaker"]
+        )
+        if gap >= paragraph_gap or speaker_changed:
             paragraphs.append(current_para)
             current_para = [cur_seg]
         else:
@@ -112,13 +123,24 @@ def merge_segments(
     # ── 4. Render paragraphs to Markdown ──────────────────────────────────
     rendered_paragraphs: list[str] = []
     last_emitted_minute = -1
+    last_speaker: str | None = None
 
     for para in paragraphs:
+        # Determine if this paragraph starts with a new speaker
+        speaker_label = ""
+        para_speaker = para[0].get("speaker")
+        if para_speaker and para_speaker != last_speaker:
+            speaker_label = f"**{para_speaker}:** "
+            last_speaker = para_speaker
+
         if timestamp_mode == "segment":
             # Each segment on its own line with a timestamp (original style).
-            lines = [
-                f"{format_timestamp(s['start'])} {s['text']}" for s in para
-            ]
+            lines: list[str] = []
+            for i, s in enumerate(para):
+                prefix = speaker_label if i == 0 else ""
+                lines.append(
+                    f"{format_timestamp(s['start'])} {prefix}{s['text'].strip()}"
+                )
             rendered_paragraphs.append("\n\n".join(lines))
 
         elif timestamp_mode == "paragraph":
@@ -126,24 +148,27 @@ def merge_segments(
             # are joined as flowing prose.
             ts = format_timestamp(para[0]["start"])
             body = " ".join(s["text"].strip() for s in para)
-            rendered_paragraphs.append(f"{ts} {body}")
+            rendered_paragraphs.append(f"{ts} {speaker_label}{body}")
 
         elif timestamp_mode == "minute":
             # Timestamp whenever a new minute begins; otherwise flowing text.
             parts: list[str] = []
-            for seg in para:
+            for i, seg in enumerate(para):
                 seg_minute = int(seg["start"] // 60)
                 text = seg["text"].strip()
+                prefix = speaker_label if i == 0 else ""
                 if seg_minute != last_emitted_minute:
-                    parts.append(f"{format_timestamp(seg['start'])} {text}")
+                    parts.append(
+                        f"{format_timestamp(seg['start'])} {prefix}{text}"
+                    )
                     last_emitted_minute = seg_minute
                 else:
-                    parts.append(text)
+                    parts.append(f"{prefix}{text}")
             rendered_paragraphs.append(" ".join(parts))
 
         else:
             # "none" — no timestamps, pure flowing text.
             body = " ".join(s["text"].strip() for s in para)
-            rendered_paragraphs.append(body)
+            rendered_paragraphs.append(f"{speaker_label}{body}")
 
     return "\n\n".join(rendered_paragraphs) + "\n"

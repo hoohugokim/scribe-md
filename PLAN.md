@@ -92,11 +92,11 @@ scribe-md/
 
 ## Phase 4 — Output Quality & Formatting
 
-### 4.1 Speaker diarization
-- Investigate `pyannote-audio` or similar for speaker identification
-- Add `--diarize` flag: label segments with `Speaker 1:`, `Speaker 2:`, etc.
+### ~~4.1 Speaker diarization~~ DONE
+- ~~Investigate `pyannote-audio` or similar for speaker identification~~ — pyannote-audio v4.x (CPU on Apple Silicon)
+- ~~Add `--diarize` flag: label segments with `Speaker 1:`, `Speaker 2:`, etc.~~ — `--diarize`, `--hf-token`, `--num-speakers`
 - Especially valuable for meeting transcription
-- Note: may require PyTorch — evaluate Apple Silicon compatibility and model size
+- Note: pyannote-audio is an optional dependency (`pip install pyannote-audio`), requires HuggingFace token
 
 ### ~~4.2 Intelligent formatting~~ DONE
 - ~~Paragraph detection: merge segments with short pauses into paragraphs~~ — `--paragraph-gap` (default 2.0s)
@@ -171,7 +171,7 @@ scribe-md/
 | ~~P2~~ | ~~5.2 Configuration file~~ | ~~Small~~ | DONE |
 | ~~P2~~ | ~~6.1 Model management~~ | ~~Small~~ | DONE |
 | ~~P2~~ | ~~6.3 Incremental output~~ | ~~Small~~ | DONE |
-| P3 | 4.1 Speaker diarization | Large | |
+| ~~P3~~ | ~~4.1 Speaker diarization~~ | ~~Large~~ | DONE |
 | ~~P3~~ | ~~4.4 LLM post-processing~~ | ~~Medium~~ | DONE |
 | ~~P3~~ | ~~6.2 Parallel transcription~~ | ~~Medium~~ | DONE |
 

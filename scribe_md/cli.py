@@ -11,9 +11,10 @@ from typing import Optional
 import typer
 from rich.console import Console
 
-from . import audio, capture, downloader, merger, obsidian, postprocess, transcriber
+from . import audio, capture, diarize, downloader, merger, obsidian, postprocess, transcriber
 from .audio import AudioConversionError, DiskFullError
 from .capture import CaptureError
+from .diarize import DiarizationError
 from .config import (
     ScribeMdConfig,
     USER_CONFIG_PATH,
@@ -228,6 +229,28 @@ def _apply_postprocessing(
 
 
 # ---------------------------------------------------------------------------
+# Diarization helper
+# ---------------------------------------------------------------------------
+
+
+def _run_diarization(
+    audio_path: Path,
+    *,
+    hf_token: str = "",
+    num_speakers: int = 0,
+) -> list[dict]:
+    """Run speaker diarization on an audio file, returning turns.
+
+    Returns an empty list if diarization is not requested.
+    """
+    log("Running speaker diarization (this may take a while)...")
+    kwargs: dict = {}
+    if num_speakers > 0:
+        kwargs["num_speakers"] = num_speakers
+    return diarize.diarize_audio(audio_path, hf_token=hf_token, **kwargs)
+
+
+# ---------------------------------------------------------------------------
 # Shared transcription pipeline
 # ---------------------------------------------------------------------------
 
@@ -259,11 +282,15 @@ def _transcribe_single(
     clean: bool = False,
     summarize: bool = False,
     summary_model: str = "",
+    diarize_turns: list[dict] | None = None,
 ) -> None:
     """Transcribe a single audio file and write Markdown output.
 
     If *write_fn* is provided it is called as ``write_fn(text, output)``
     instead of writing directly to *output*.
+
+    If *diarize_turns* is provided, speaker labels are assigned to each
+    segment before merging.
     """
     if audio.is_silent(audio_path):
         log(f"Skipping {audio_path.name}: audio is silent")
@@ -271,6 +298,9 @@ def _transcribe_single(
 
     result = transcriber.transcribe_audio(audio_path, model=model, language=language)
     segments = transcriber.extract_segments(result)
+
+    if diarize_turns is not None:
+        segments = diarize.assign_speakers(segments, diarize_turns)
 
     if not segments:
         log(f"Skipping {audio_path.name}: no speech detected")
@@ -323,6 +353,7 @@ def _transcribe_chunked(
     clean: bool = False,
     summarize: bool = False,
     summary_model: str = "",
+    diarize_turns: list[dict] | None = None,
 ) -> None:
     """Split a long audio file into chunks, transcribe each, and merge.
 
@@ -338,6 +369,9 @@ def _transcribe_chunked(
 
     If *write_fn* is provided it is called as ``write_fn(text, output)``
     instead of writing directly to *output*.
+
+    If *diarize_turns* is provided, speaker labels are assigned to each
+    chunk's segments (using the global timeline) before merging.
     """
     with tempfile.TemporaryDirectory(prefix="scribe-md-chunks-") as tmp:
         tmp_dir = Path(tmp)
@@ -359,6 +393,14 @@ def _transcribe_chunked(
                 chunks, model, language, output,
                 incremental=incremental,
             )
+
+        # Assign speaker labels if diarization was performed
+        if diarize_turns is not None:
+            for idx, segs in enumerate(all_segments):
+                offset = 0.0 if idx == 0 else idx * chunk_seconds - overlap_seconds
+                all_segments[idx] = diarize.assign_speakers(
+                    segs, diarize_turns, time_offset=offset,
+                )
 
         text = merger.merge_segments(
             all_segments,
@@ -502,6 +544,9 @@ def file(
     clean: Optional[bool] = typer.Option(None, "--clean", help="Apply rule-based artifact cleaning to the transcription"),
     summarize: bool = typer.Option(False, "--summarize", help="Append an LLM-generated summary (requires mlx-lm)"),
     summary_model: Optional[str] = typer.Option(None, "--summary-model", help="Override the LLM model for summarization"),
+    diarize_flag: Optional[bool] = typer.Option(None, "--diarize/--no-diarize", help="Enable speaker diarization (requires pyannote-audio)"),
+    hf_token: Optional[str] = typer.Option(None, "--hf-token", help="HuggingFace token for diarization model"),
+    num_speakers: Optional[int] = typer.Option(None, "--num-speakers", help="Number of speakers (0 = auto-detect)"),
 ) -> None:
     """Transcribe an existing audio file to Markdown."""
     if not audio_file.exists():
@@ -527,6 +572,9 @@ def file(
     r_daily_note_folder = cfg.daily_note_folder
     r_clean = _resolve(clean, cfg.clean)
     r_summary_model = _resolve(summary_model, cfg.summary_model)
+    r_diarize = _resolve(diarize_flag, cfg.diarize)
+    r_hf_token = _resolve(hf_token, cfg.hf_token)
+    r_num_speakers = _resolve(num_speakers, cfg.num_speakers)
 
     # Frontmatter defaults to True when vault is set
     r_frontmatter = frontmatter if frontmatter is not None else bool(r_vault)
@@ -556,6 +604,14 @@ def file(
                     metadata, r_daily_note_folder,
                 )
 
+            # Run diarization on the full audio if requested
+            turns = None
+            if r_diarize:
+                turns = _run_diarization(
+                    converted, hf_token=r_hf_token,
+                    num_speakers=r_num_speakers,
+                )
+
             if file_duration > r_chunk_seconds:
                 _transcribe_chunked(
                     converted, out, r_model, r_language, ts,
@@ -567,6 +623,7 @@ def file(
                     workers=r_workers,
                     clean=r_clean, summarize=summarize,
                     summary_model=r_summary_model,
+                    diarize_turns=turns,
                 )
             else:
                 _transcribe_single(
@@ -575,7 +632,11 @@ def file(
                     write_fn=write_fn,
                     clean=r_clean, summarize=summarize,
                     summary_model=r_summary_model,
+                    diarize_turns=turns,
                 )
+    except (DiarizationError, ImportError) as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
     except AudioConversionError as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
@@ -640,6 +701,9 @@ def url(
     clean: Optional[bool] = typer.Option(None, "--clean", help="Apply rule-based artifact cleaning to the transcription"),
     summarize: bool = typer.Option(False, "--summarize", help="Append an LLM-generated summary (requires mlx-lm)"),
     summary_model: Optional[str] = typer.Option(None, "--summary-model", help="Override the LLM model for summarization"),
+    diarize_flag: Optional[bool] = typer.Option(None, "--diarize/--no-diarize", help="Enable speaker diarization (requires pyannote-audio)"),
+    hf_token: Optional[str] = typer.Option(None, "--hf-token", help="HuggingFace token for diarization model"),
+    num_speakers: Optional[int] = typer.Option(None, "--num-speakers", help="Number of speakers (0 = auto-detect)"),
 ) -> None:
     """Transcribe audio from a YouTube URL to Markdown."""
     cfg = load_config()
@@ -657,6 +721,9 @@ def url(
     r_daily_note_folder = cfg.daily_note_folder
     r_clean = _resolve(clean, cfg.clean)
     r_summary_model = _resolve(summary_model, cfg.summary_model)
+    r_diarize = _resolve(diarize_flag, cfg.diarize)
+    r_hf_token = _resolve(hf_token, cfg.hf_token)
+    r_num_speakers = _resolve(num_speakers, cfg.num_speakers)
 
     # Frontmatter defaults to True when vault is set
     r_frontmatter = frontmatter if frontmatter is not None else bool(r_vault)
@@ -688,6 +755,8 @@ def url(
                         daily_note_folder=r_daily_note_folder,
                         clean=r_clean, summarize=summarize,
                         summary_model=r_summary_model,
+                        diarize_enabled=r_diarize, hf_token=r_hf_token,
+                        num_speakers=r_num_speakers,
                     )
                 except DiskFullError:
                     raise  # Disk-full is fatal even for playlists
@@ -706,7 +775,12 @@ def url(
                 daily_note_folder=r_daily_note_folder,
                 clean=r_clean, summarize=summarize,
                 summary_model=r_summary_model,
+                diarize_enabled=r_diarize, hf_token=r_hf_token,
+                num_speakers=r_num_speakers,
             )
+    except (DiarizationError, ImportError) as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
     except (AudioConversionError, TranscriptionError) as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
@@ -744,6 +818,9 @@ def _transcribe_url(
     clean: bool = False,
     summarize: bool = False,
     summary_model: str = "",
+    diarize_enabled: bool = False,
+    hf_token: str = "",
+    num_speakers: int = 0,
 ) -> None:
     """Download and transcribe a single video URL."""
     with tempfile.TemporaryDirectory(prefix="scribe-md-dl-") as tmp:
@@ -775,6 +852,13 @@ def _transcribe_url(
                 metadata, daily_note_folder,
             )
 
+        # Run diarization on the full audio if requested
+        turns = None
+        if diarize_enabled:
+            turns = _run_diarization(
+                converted, hf_token=hf_token, num_speakers=num_speakers,
+            )
+
         if duration > chunk_seconds:
             _transcribe_chunked(
                 converted, out, model, language, timestamps,
@@ -786,6 +870,7 @@ def _transcribe_url(
                 workers=workers,
                 clean=clean, summarize=summarize,
                 summary_model=summary_model,
+                diarize_turns=turns,
             )
         else:
             _transcribe_single(
@@ -794,6 +879,7 @@ def _transcribe_url(
                 write_fn=write_fn,
                 clean=clean, summarize=summarize,
                 summary_model=summary_model,
+                diarize_turns=turns,
             )
 
 
@@ -836,6 +922,9 @@ def live(
     clean: Optional[bool] = typer.Option(None, "--clean", help="Apply rule-based artifact cleaning to the transcription"),
     summarize: bool = typer.Option(False, "--summarize", help="Append an LLM-generated summary (requires mlx-lm)"),
     summary_model: Optional[str] = typer.Option(None, "--summary-model", help="Override the LLM model for summarization"),
+    diarize_flag: Optional[bool] = typer.Option(None, "--diarize/--no-diarize", help="Enable speaker diarization (requires pyannote-audio)"),
+    hf_token: Optional[str] = typer.Option(None, "--hf-token", help="HuggingFace token for diarization model"),
+    num_speakers: Optional[int] = typer.Option(None, "--num-speakers", help="Number of speakers (0 = auto-detect)"),
 ) -> None:
     """Capture and transcribe system audio in real-time."""
     cfg = load_config()
@@ -852,6 +941,9 @@ def live(
     r_daily_note_folder = cfg.daily_note_folder
     r_clean = _resolve(clean, cfg.clean)
     r_summary_model = _resolve(summary_model, cfg.summary_model)
+    r_diarize = _resolve(diarize_flag, cfg.diarize)
+    r_hf_token = _resolve(hf_token, cfg.hf_token)
+    r_num_speakers = _resolve(num_speakers, cfg.num_speakers)
     r_output = output or Path("transcription.md")
 
     # Frontmatter defaults to True when vault is set
@@ -888,6 +980,8 @@ def live(
                 write_fn=write_fn,
                 clean=r_clean, summarize=summarize,
                 summary_model=r_summary_model,
+                diarize_enabled=r_diarize, hf_token=r_hf_token,
+                num_speakers=r_num_speakers,
             )
         else:
             _live_single(
@@ -896,7 +990,12 @@ def live(
                 write_fn=write_fn,
                 clean=r_clean, summarize=summarize,
                 summary_model=r_summary_model,
+                diarize_enabled=r_diarize, hf_token=r_hf_token,
+                num_speakers=r_num_speakers,
             )
+    except (DiarizationError, ImportError) as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
     except CaptureError as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
@@ -931,6 +1030,9 @@ def _live_single(
     clean: bool = False,
     summarize: bool = False,
     summary_model: str = "",
+    diarize_enabled: bool = False,
+    hf_token: str = "",
+    num_speakers: int = 0,
 ) -> None:
     """Single-file live capture pipeline."""
     with tempfile.TemporaryDirectory(prefix="scribe-md-live-") as tmp:
@@ -968,12 +1070,21 @@ def _live_single(
         converted = tmp_dir / "converted.wav"
         log("Converting to 16kHz mono...")
         audio.convert_to_16k_mono(raw_wav, converted)
+
+        # Run diarization on the full recording if requested
+        turns = None
+        if diarize_enabled:
+            turns = _run_diarization(
+                converted, hf_token=hf_token, num_speakers=num_speakers,
+            )
+
         _transcribe_single(
             converted, output, model, language, timestamps,
             timestamp_mode=timestamp_mode, paragraph_gap=paragraph_gap,
             write_fn=write_fn,
             clean=clean, summarize=summarize,
             summary_model=summary_model,
+            diarize_turns=turns,
         )
 
         if keep_audio:
@@ -1001,6 +1112,9 @@ def _live_chunked(
     clean: bool = False,
     summarize: bool = False,
     summary_model: str = "",
+    diarize_enabled: bool = False,
+    hf_token: str = "",
+    num_speakers: int = 0,
 ) -> None:
     """Chunked live capture pipeline with concurrent transcription."""
     with tempfile.TemporaryDirectory(prefix="scribe-md-chunks-") as tmp:
@@ -1084,6 +1198,12 @@ def _live_chunked(
         for cj in sorted(chunk_jsons):
             data = json.loads(cj.read_text(encoding="utf-8"))
             all_segments.append(data.get("segments", []))
+
+        # Diarization for live chunked mode is not supported (no full audio
+        # available during capture).  Users should use single-capture mode
+        # with --diarize, or use file mode on the saved audio.
+        if diarize_enabled:
+            log("Note: diarization is not supported in live chunked mode. Skipping.")
 
         text = merger.merge_segments(
             all_segments,

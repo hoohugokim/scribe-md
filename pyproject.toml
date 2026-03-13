@@ -10,6 +10,9 @@ dependencies = [
     "rich",
 ]
 
+[project.optional-dependencies]
+diarize = ["pyannote-audio>=4.0"]
+
 [project.scripts]
 scribe-md = "scribe_md.cli:app"
 
