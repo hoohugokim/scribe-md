@@ -40,7 +40,7 @@ clean = false             # apply rule-based artifact cleaning to transcription
 summary_model = ""        # LLM model for --summarize (empty = default model)
 
 [output]
-directory = "."           # default output directory
+directory = "output"      # default output directory
 
 [obsidian]
 vault = ""                # path to Obsidian vault (empty = disabled)
@@ -76,7 +76,7 @@ class ScribeMdConfig:
     summary_model: str = ""
 
     # [output]
-    output_directory: str = "."
+    output_directory: str = "output"
 
     # [obsidian]
     vault: str = ""

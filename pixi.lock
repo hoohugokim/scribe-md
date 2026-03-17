@@ -1749,12 +1749,13 @@ packages:
 - pypi: ./
   name: scribe-md
   version: 0.1.0
-  sha256: 03ae4bf8124c692e51f7accc7f147af12b3363daadefacb734fc613cb2f0bdae
+  sha256: 31250209fc50c0257d858564fd03ad6b3111b9403794c811ecfa95f2b95b3c81
   requires_dist:
   - typer>=0.9
   - mlx-whisper
   - yt-dlp
   - rich
+  - pyannote-audio>=4.0 ; extra == 'diarize'
   requires_python: '>=3.12'
 - conda: https://conda.anaconda.org/conda-forge/osx-arm64/sdl2-2.32.56-h248ca61_0.conda
   sha256: 704c5cae4bc839a18c70cbf3387d7789f1902828c79c6ddabcd34daf594f4103

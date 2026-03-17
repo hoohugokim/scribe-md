@@ -2,13 +2,20 @@
 .pixi/*
 !.pixi/config.toml
 
+# Claude Code
+.claude/
+
 # Swift build artifacts
 capture/.build/
+
+# pytest
+.pytest_cache/
 
 # Transcription outputs (user-specific)
 *.md
 !PLAN.md
 !README.md
+output/
 
 # Session handoff files
 SESSION-HANDOFF_*.md

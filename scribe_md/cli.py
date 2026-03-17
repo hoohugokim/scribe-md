@@ -581,7 +581,12 @@ def file(
 
     _validate_timestamp_mode(r_timestamp_mode)
     ts, ts_mode = _resolve_timestamp_flags(r_timestamps, r_timestamp_mode)
-    out = output or audio_file.with_suffix(".md")
+    if output:
+        out = output
+    else:
+        out_dir = Path(cfg.output_directory)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / audio_file.with_suffix(".md").name
 
     source = f"file: {audio_file.name}"
 
@@ -757,6 +762,7 @@ def url(
                         summary_model=r_summary_model,
                         diarize_enabled=r_diarize, hf_token=r_hf_token,
                         num_speakers=r_num_speakers,
+                        output_directory=cfg.output_directory,
                     )
                 except DiskFullError:
                     raise  # Disk-full is fatal even for playlists
@@ -777,6 +783,7 @@ def url(
                 summary_model=r_summary_model,
                 diarize_enabled=r_diarize, hf_token=r_hf_token,
                 num_speakers=r_num_speakers,
+                output_directory=cfg.output_directory,
             )
     except (DiarizationError, ImportError) as e:
         console.print(f"[red]Error:[/red] {e}")
@@ -821,6 +828,7 @@ def _transcribe_url(
     diarize_enabled: bool = False,
     hf_token: str = "",
     num_speakers: int = 0,
+    output_directory: str = ".",
 ) -> None:
     """Download and transcribe a single video URL."""
     with tempfile.TemporaryDirectory(prefix="scribe-md-dl-") as tmp:
@@ -835,7 +843,12 @@ def _transcribe_url(
         audio.convert_to_16k_mono(raw_audio, converted)
 
         # Determine output path
-        out = output or Path(f"{sanitize_filename(title)}.md")
+        if output:
+            out = output
+        else:
+            out_dir = Path(output_directory)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out = out_dir / f"{sanitize_filename(title)}.md"
 
         duration = audio.get_duration(converted)
         log(f"Duration: {duration / 60:.1f} min")
@@ -944,7 +957,12 @@ def live(
     r_diarize = _resolve(diarize_flag, cfg.diarize)
     r_hf_token = _resolve(hf_token, cfg.hf_token)
     r_num_speakers = _resolve(num_speakers, cfg.num_speakers)
-    r_output = output or Path("transcription.md")
+    if output:
+        r_output = output
+    else:
+        out_dir = Path(cfg.output_directory)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        r_output = out_dir / "transcription.md"
 
     # Frontmatter defaults to True when vault is set
     r_frontmatter = frontmatter if frontmatter is not None else bool(r_vault)
