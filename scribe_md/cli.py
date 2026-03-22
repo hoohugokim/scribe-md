@@ -3,8 +3,6 @@
 import json
 import signal
 import tempfile
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
@@ -348,8 +346,6 @@ def _transcribe_chunked(
     paragraph_gap: float = 2.0,
     incremental: bool = False,
     write_fn=None,
-    parallel: bool = True,
-    workers: int = 2,
     clean: bool = False,
     summarize: bool = False,
     summary_model: str = "",
@@ -357,15 +353,13 @@ def _transcribe_chunked(
 ) -> None:
     """Split a long audio file into chunks, transcribe each, and merge.
 
+    Chunks are always transcribed sequentially because mlx-whisper
+    saturates the GPU with a single inference — parallel threads cause
+    Metal command-buffer crashes on Apple Silicon.
+
     When *incremental* is True, each chunk's preliminary transcription is
     appended to the output file as soon as it completes.  The final merge
     pass then overwrites the file with the properly deduped result.
-
-    When *parallel* is True (default), chunks are transcribed concurrently
-    using a ``ThreadPoolExecutor`` with at most *workers* threads.  This
-    significantly speeds up offline transcription (file / url commands).
-    A ``ThreadPoolExecutor`` (not ``ProcessPoolExecutor``) is used because
-    mlx-whisper shares GPU/ANE state within a single process.
 
     If *write_fn* is provided it is called as ``write_fn(text, output)``
     instead of writing directly to *output*.
@@ -383,16 +377,10 @@ def _transcribe_chunked(
         if incremental:
             output.write_text("", encoding="utf-8")
 
-        if parallel and len(chunks) > 1:
-            all_segments = _transcribe_chunks_parallel(
-                chunks, model, language, output,
-                incremental=incremental, workers=workers,
-            )
-        else:
-            all_segments = _transcribe_chunks_sequential(
-                chunks, model, language, output,
-                incremental=incremental,
-            )
+        all_segments = _transcribe_chunks_sequential(
+            chunks, model, language, output,
+            incremental=incremental,
+        )
 
         # Assign speaker labels if diarization was performed
         if diarize_turns is not None:
@@ -447,58 +435,6 @@ def _transcribe_chunks_sequential(
     return all_segments
 
 
-def _transcribe_chunks_parallel(
-    chunks: list[Path],
-    model: str,
-    language: str | None,
-    output: Path,
-    *,
-    incremental: bool = False,
-    workers: int = 2,
-) -> list[list[dict]]:
-    """Transcribe chunks in parallel using a ThreadPoolExecutor.
-
-    Results are always collected in chunk order for proper merging.
-    Incremental output is written as each chunk completes (in completion
-    order), with a lock to prevent interleaved file writes.
-    """
-    n = len(chunks)
-    all_segments: list[list[dict]] = [[] for _ in range(n)]
-    write_lock = threading.Lock()
-    effective_workers = min(workers, n)
-
-    log(f"Parallel transcription: {effective_workers} workers for {n} chunks")
-
-    with ThreadPoolExecutor(max_workers=effective_workers) as executor:
-        # Submit all chunks, tagging each future with its index
-        future_to_idx = {}
-        for i, chunk_path in enumerate(chunks):
-            future = executor.submit(_transcribe_chunk, chunk_path, model, language)
-            future_to_idx[future] = i
-
-        # Collect results as they complete
-        for future in as_completed(future_to_idx):
-            idx = future_to_idx[future]
-            try:
-                segments = future.result()
-            except Exception as e:
-                log(f"  Chunk {idx} failed: {e}")
-                segments = []
-
-            all_segments[idx] = segments
-
-            if segments:
-                console.print(f"  Chunk {idx + 1}/{n} done ({len(segments)} segments)")
-            else:
-                log(f"  Chunk {idx}: silent or no speech, skipping")
-
-            if incremental:
-                with write_lock:
-                    _append_incremental(output, segments)
-
-    return all_segments
-
-
 # ---------------------------------------------------------------------------
 # scribe-md file
 # ---------------------------------------------------------------------------
@@ -530,14 +466,6 @@ def file(
         None, "--incremental/--no-incremental",
         help="Write chunks to output file incrementally (default: off)",
     ),
-    parallel: Optional[bool] = typer.Option(
-        None, "--parallel/--no-parallel",
-        help="Parallelize chunk transcription (default: on)",
-    ),
-    workers: Optional[int] = typer.Option(
-        None, "--workers",
-        help="Number of parallel transcription workers (1-4, default: 2)",
-    ),
     vault: Optional[str] = typer.Option(None, "--vault", help="Obsidian vault path (overrides config)"),
     daily_note: bool = typer.Option(False, "--daily-note", help="Append to today's daily note"),
     frontmatter: Optional[bool] = typer.Option(None, "--frontmatter/--no-frontmatter", help="Include YAML frontmatter (default: on when vault is set)"),
@@ -566,8 +494,6 @@ def file(
     r_chunk_seconds = _resolve(chunk_seconds, cfg.chunk_seconds)
     r_overlap_seconds = _resolve(overlap_seconds, cfg.overlap_seconds)
     r_incremental = _resolve(incremental, cfg.incremental)
-    r_parallel = _resolve(parallel, cfg.parallel)
-    r_workers = max(1, min(4, _resolve(workers, cfg.workers)))
     r_vault = _resolve(vault, cfg.vault)
     r_daily_note_folder = cfg.daily_note_folder
     r_clean = _resolve(clean, cfg.clean)
@@ -624,8 +550,6 @@ def file(
                     timestamp_mode=ts_mode, paragraph_gap=r_paragraph_gap,
                     incremental=r_incremental,
                     write_fn=write_fn,
-                    parallel=r_parallel,
-                    workers=r_workers,
                     clean=r_clean, summarize=summarize,
                     summary_model=r_summary_model,
                     diarize_turns=turns,
@@ -692,14 +616,6 @@ def url(
         None, "--incremental/--no-incremental",
         help="Write chunks to output file incrementally (default: off)",
     ),
-    parallel: Optional[bool] = typer.Option(
-        None, "--parallel/--no-parallel",
-        help="Parallelize chunk transcription (default: on)",
-    ),
-    workers: Optional[int] = typer.Option(
-        None, "--workers",
-        help="Number of parallel transcription workers (1-4, default: 2)",
-    ),
     vault: Optional[str] = typer.Option(None, "--vault", help="Obsidian vault path (overrides config)"),
     daily_note: bool = typer.Option(False, "--daily-note", help="Append to today's daily note"),
     frontmatter: Optional[bool] = typer.Option(None, "--frontmatter/--no-frontmatter", help="Include YAML frontmatter (default: on when vault is set)"),
@@ -720,8 +636,6 @@ def url(
     r_chunk_seconds = _resolve(chunk_seconds, cfg.chunk_seconds)
     r_overlap_seconds = _resolve(overlap_seconds, cfg.overlap_seconds)
     r_incremental = _resolve(incremental, cfg.incremental)
-    r_parallel = _resolve(parallel, cfg.parallel)
-    r_workers = max(1, min(4, _resolve(workers, cfg.workers)))
     r_vault = _resolve(vault, cfg.vault)
     r_daily_note_folder = cfg.daily_note_folder
     r_clean = _resolve(clean, cfg.clean)
@@ -754,7 +668,6 @@ def url(
                         overlap_seconds=r_overlap_seconds,
                         timestamp_mode=ts_mode, paragraph_gap=r_paragraph_gap,
                         incremental=r_incremental,
-                        parallel=r_parallel, workers=r_workers,
                         vault=r_vault, daily_note=daily_note,
                         frontmatter=r_frontmatter,
                         daily_note_folder=r_daily_note_folder,
@@ -775,7 +688,6 @@ def url(
                 overlap_seconds=r_overlap_seconds,
                 timestamp_mode=ts_mode, paragraph_gap=r_paragraph_gap,
                 incremental=r_incremental,
-                parallel=r_parallel, workers=r_workers,
                 vault=r_vault, daily_note=daily_note,
                 frontmatter=r_frontmatter,
                 daily_note_folder=r_daily_note_folder,
@@ -816,8 +728,6 @@ def _transcribe_url(
     timestamp_mode: str = "segment",
     paragraph_gap: float = 2.0,
     incremental: bool = False,
-    parallel: bool = True,
-    workers: int = 2,
     vault: str = "",
     daily_note: bool = False,
     frontmatter: bool = False,
@@ -879,8 +789,6 @@ def _transcribe_url(
                 timestamp_mode=timestamp_mode, paragraph_gap=paragraph_gap,
                 incremental=incremental,
                 write_fn=write_fn,
-                parallel=parallel,
-                workers=workers,
                 clean=clean, summarize=summarize,
                 summary_model=summary_model,
                 diarize_turns=turns,
