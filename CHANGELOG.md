@@ -7,7 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-05-06
+## [0.1.1] - 2026-05-06
+
+Pre-release security and correctness pass.
+
+### Security
+- `scribe-md config show` redacts `hf_token` to `<set>` so credentials never
+  reach stdout.
+- README recommends `HF_TOKEN` env var or config file over `--hf-token` on the
+  command line (which would be recorded in shell history and visible in `ps`).
+- YAML frontmatter values are properly quoted and escaped so untrusted source
+  strings (e.g. YouTube titles containing `"` or `:`) cannot break the
+  frontmatter.
+- TOML rendering in `config show` escapes `\` and `"` in string fields.
+
+### Fixed
+- `audio.is_silent` raises a clear `AudioConversionError` with an install hint
+  when ffmpeg is missing, matching the other ffmpeg call sites.
+- `--keep-audio` saves the kept WAV / chunks directory next to the markdown
+  output rather than the current working directory.
+
+## [0.1.0] - 2026-05-04
 
 Initial release.
 
@@ -34,22 +54,6 @@ Initial release.
   → project-local `.scribe-md.toml` → CLI flags.
 - Configurable output directory.
 
-### Security
-- `scribe-md config show` redacts `hf_token` to `<set>` so tokens never reach
-  stdout.
-- README recommends `HF_TOKEN` env var or config file over `--hf-token` on
-  the command line (which would be recorded in shell history and visible in
-  `ps`).
-- YAML frontmatter values are properly quoted and escaped so untrusted source
-  strings (e.g. YouTube titles containing `"` or `:`) cannot break the
-  frontmatter.
-- TOML rendering in `config show` escapes `\` and `"` in string fields.
-
-### Fixed
-- `audio.is_silent` raises a clear `AudioConversionError` with an install hint
-  when ffmpeg is missing, matching the other ffmpeg call sites.
-- `--keep-audio` saves the kept WAV / chunks directory next to the markdown
-  output rather than the current working directory.
-
-[Unreleased]: https://github.com/hoohugokim/scribe-md/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/hoohugokim/scribe-md/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/hoohugokim/scribe-md/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/hoohugokim/scribe-md/releases/tag/v0.1.0
