@@ -59,16 +59,26 @@ class TestBuildFrontmatter:
         result = build_frontmatter(meta)
         assert result.startswith("---\n")
         assert result.endswith("---\n")
-        assert "date: 2026-03-13" in result
-        assert "language: ko" in result
-        assert "model: large-v3" in result
+        assert 'date: "2026-03-13"' in result
+        assert 'language: "ko"' in result
+        assert 'model: "large-v3"' in result
         assert 'duration: "5:32"' in result
-        assert "tags: [transcription]" in result
+        assert 'tags: ["transcription"]' in result
 
     def test_source_with_colon_is_quoted(self):
         meta = {"source": "YouTube: My Video Title"}
         result = build_frontmatter(meta)
         assert '"YouTube: My Video Title"' in result
+
+    def test_source_with_embedded_quotes_is_escaped(self):
+        meta = {"source": 'YouTube: Some "quoted" title'}
+        result = build_frontmatter(meta)
+        assert r'source: "YouTube: Some \"quoted\" title"' in result
+
+    def test_source_with_backslash_is_escaped(self):
+        meta = {"source": r"file: C:\path\to\thing"}
+        result = build_frontmatter(meta)
+        assert r'source: "file: C:\\path\\to\\thing"' in result
 
     def test_empty_metadata(self):
         result = build_frontmatter({})
@@ -77,8 +87,8 @@ class TestBuildFrontmatter:
     def test_missing_optional_fields(self):
         meta = {"date": "2026-03-13", "model": "large-v3"}
         result = build_frontmatter(meta)
-        assert "date: 2026-03-13" in result
-        assert "model: large-v3" in result
+        assert 'date: "2026-03-13"' in result
+        assert 'model: "large-v3"' in result
         assert "source" not in result
         assert "language" not in result
         assert "duration" not in result
@@ -91,7 +101,7 @@ class TestBuildFrontmatter:
     def test_multiple_tags(self):
         meta = {"tags": ["transcription", "meeting"]}
         result = build_frontmatter(meta)
-        assert "tags: [transcription, meeting]" in result
+        assert 'tags: ["transcription", "meeting"]' in result
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +117,7 @@ class TestWriteWithFrontmatter:
 
         content = output.read_text(encoding="utf-8")
         assert content.startswith("---\n")
-        assert "date: 2026-03-13" in content
+        assert 'date: "2026-03-13"' in content
         assert "Hello world." in content
 
     def test_creates_parent_directories(self, tmp_path):

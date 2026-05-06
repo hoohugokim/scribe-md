@@ -198,31 +198,49 @@ def load_config() -> ScribeMdConfig:
     return cfg
 
 
+def _toml_escape(s: str) -> str:
+    """Escape a string for TOML basic-string output (display only)."""
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _toml_str(s: str) -> str:
+    """Render a Python str as a TOML basic string with escaping."""
+    return f'"{_toml_escape(s)}"'
+
+
+def _redact_token(token: str) -> str:
+    """Render a secret token for display without leaking its value."""
+    return "<set>" if token else ""
+
+
 def config_as_toml(cfg: ScribeMdConfig) -> str:
-    """Render a ScribeMdConfig as a TOML string (for display purposes)."""
+    """Render a ScribeMdConfig as a TOML string (for display purposes).
+
+    The ``hf_token`` field is redacted — never echo a credential to stdout.
+    """
     lines = [
         "[defaults]",
-        f'model = "{cfg.model}"',
-        f'language = "{cfg.language}"',
+        f"model = {_toml_str(cfg.model)}",
+        f"language = {_toml_str(cfg.language)}",
         f"timestamps = {'true' if cfg.timestamps else 'false'}",
-        f'timestamp_mode = "{cfg.timestamp_mode}"',
+        f"timestamp_mode = {_toml_str(cfg.timestamp_mode)}",
         f"paragraph_gap = {cfg.paragraph_gap}",
         f"chunk_seconds = {cfg.chunk_seconds}",
         f"overlap_seconds = {cfg.overlap_seconds}",
         f"incremental = {'true' if cfg.incremental else 'false'}",
         f"clean = {'true' if cfg.clean else 'false'}",
-        f'summary_model = "{cfg.summary_model}"',
+        f"summary_model = {_toml_str(cfg.summary_model)}",
         "",
         "[output]",
-        f'directory = "{cfg.output_directory}"',
+        f"directory = {_toml_str(cfg.output_directory)}",
         "",
         "[obsidian]",
-        f'vault = "{cfg.vault}"',
-        f'daily_note_folder = "{cfg.daily_note_folder}"',
+        f"vault = {_toml_str(cfg.vault)}",
+        f"daily_note_folder = {_toml_str(cfg.daily_note_folder)}",
         "",
         "[diarization]",
         f"diarize = {'true' if cfg.diarize else 'false'}",
-        f'hf_token = "{cfg.hf_token}"',
+        f"hf_token = {_toml_str(_redact_token(cfg.hf_token))}",
         f"num_speakers = {cfg.num_speakers}",
         "",
         "[live]",

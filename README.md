@@ -210,23 +210,20 @@ Identify and label speakers using [pyannote-audio](https://github.com/pyannote/p
 
 2. Get a [HuggingFace token](https://huggingface.co/settings/tokens) and accept the model terms at [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1).
 
-3. Provide the token via any of:
-   - `--hf-token YOUR_TOKEN`
-   - `hf_token` in config file
+3. Provide the token via any of (preferred first):
    - `HF_TOKEN` environment variable
+   - `hf_token` in `~/.config/scribe-md/config.toml`
+   - `--hf-token YOUR_TOKEN` *(not recommended — secrets on the command line are recorded in shell history and visible in `ps`)*
 
 ### Usage
 
 ```bash
-# Auto-detect number of speakers
-scribe-md file meeting.wav --diarize --hf-token hf_xxx
+# Auto-detect number of speakers (token from HF_TOKEN env var)
+export HF_TOKEN=hf_xxx
+scribe-md file meeting.wav --diarize
 
 # Specify known speaker count for better accuracy
 scribe-md file interview.wav --diarize --num-speakers 2
-
-# With environment variable
-export HF_TOKEN=hf_xxx
-scribe-md file meeting.wav --diarize
 ```
 
 ### Output Example
@@ -355,7 +352,8 @@ scribe-md file voice-memo.m4a -m tiny
 scribe-md url "https://youtube.com/watch?v=..." -l ko --timestamp-mode paragraph
 
 # Meeting recording with speaker labels, cleaning, and summary
-scribe-md file meeting.wav --diarize --clean --summarize --hf-token hf_xxx
+# (HF_TOKEN env var or hf_token in config picks up the auth token)
+scribe-md file meeting.wav --diarize --clean --summarize
 
 # Live capture from Zoom, saved to Obsidian vault
 scribe-md live --app Zoom --vault ~/ObsidianVault --daily-note

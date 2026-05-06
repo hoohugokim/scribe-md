@@ -27,6 +27,17 @@ def format_duration(seconds: float) -> str:
     return f"{m}:{s:02d}"
 
 
+def _yaml_quote(value: str) -> str:
+    """Wrap a string as a YAML double-quoted scalar with proper escaping.
+
+    Escapes ``\\`` and ``"`` so that values containing colons, quotes, or
+    other special characters round-trip safely through Obsidian's YAML
+    parser.
+    """
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
 def build_frontmatter(metadata: dict) -> str:
     """Build a YAML frontmatter string from a metadata dict.
 
@@ -45,12 +56,11 @@ def build_frontmatter(metadata: dict) -> str:
     for key in ("date", "source", "duration", "language", "model"):
         if key in metadata and metadata[key]:
             value = metadata[key]
-            # Quote strings that contain special YAML characters
-            if isinstance(value, str) and (":" in value or '"' in value):
-                value = f'"{value}"'
+            if isinstance(value, str):
+                value = _yaml_quote(value)
             lines.append(f"{key}: {value}")
     if "tags" in metadata and metadata["tags"]:
-        tag_list = ", ".join(metadata["tags"])
+        tag_list = ", ".join(_yaml_quote(t) for t in metadata["tags"])
         lines.append(f"tags: [{tag_list}]")
     lines.append("---")
     return "\n".join(lines) + "\n"

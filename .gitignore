@@ -15,6 +15,7 @@ capture/.build/
 *.md
 !PLAN.md
 !README.md
+!CHANGELOG.md
 output/
 
 # Session handoff files

@@ -99,14 +99,19 @@ def is_silent(audio_path: Path, threshold_db: float = -50) -> bool:
     Returns True if mean volume is below threshold_db (default -50 dBFS).
     Silent audio causes Whisper to hallucinate (e.g. "자막제공자").
     """
-    result = subprocess.run(
-        [
-            "ffmpeg", "-i", str(audio_path),
-            "-af", "volumedetect",
-            "-f", "null", "/dev/null",
-        ],
-        capture_output=True, text=True,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-i", str(audio_path),
+                "-af", "volumedetect",
+                "-f", "null", "/dev/null",
+            ],
+            capture_output=True, text=True,
+        )
+    except FileNotFoundError:
+        raise AudioConversionError(
+            "ffmpeg not found. Install it with: brew install ffmpeg"
+        )
     for line in result.stderr.split("\n"):
         if "mean_volume:" in line:
             try:

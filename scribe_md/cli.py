@@ -1015,7 +1015,8 @@ def _live_single(
 
         if keep_audio:
             import shutil
-            saved = Path(f"recording_{output.stem}.wav")
+            saved = output.parent / f"recording_{output.stem}.wav"
+            saved.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(converted, saved)
             log(f"Audio saved: {saved}")
 
@@ -1149,10 +1150,11 @@ def _live_chunked(
             log(f"Done: {output} ({len(chunk_jsons)} chunks)")
 
         if keep_audio:
-            log(f"Audio chunks saved: {tmp_dir}")
-            # Prevent cleanup by copying to a persistent location
+            # Copy to a persistent location next to the markdown output before
+            # the temp dir is cleaned up.
             import shutil
-            saved_dir = Path(f"chunks_{output.stem}")
+            saved_dir = output.parent / f"chunks_{output.stem}"
+            saved_dir.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(tmp_dir, saved_dir)
             log(f"Audio saved: {saved_dir}")
 
