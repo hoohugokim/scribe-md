@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 from .utils import log
+from .platform_support import ffmpeg_install_hint
 
 
 class AudioConversionError(RuntimeError):
@@ -43,7 +44,7 @@ def convert_to_16k_mono(input_path: Path, output_path: Path) -> Path:
         )
     except FileNotFoundError:
         raise AudioConversionError(
-            "ffmpeg not found. Install it with: brew install ffmpeg"
+            f"ffmpeg not found. {ffmpeg_install_hint()}"
         )
 
     if result.returncode != 0:
@@ -75,7 +76,7 @@ def get_duration(audio_path: Path) -> float:
         )
     except FileNotFoundError:
         raise AudioConversionError(
-            "ffprobe not found. Install it with: brew install ffmpeg"
+            f"ffprobe not found. {ffmpeg_install_hint()}"
         )
 
     if result.returncode != 0:
@@ -110,7 +111,7 @@ def is_silent(audio_path: Path, threshold_db: float = -50) -> bool:
         )
     except FileNotFoundError:
         raise AudioConversionError(
-            "ffmpeg not found. Install it with: brew install ffmpeg"
+            f"ffmpeg not found. {ffmpeg_install_hint()}"
         )
     for line in result.stderr.split("\n"):
         if "mean_volume:" in line:
@@ -161,7 +162,7 @@ def split_audio(
             )
         except FileNotFoundError:
             raise AudioConversionError(
-                "ffmpeg not found. Install it with: brew install ffmpeg"
+                f"ffmpeg not found. {ffmpeg_install_hint()}"
             )
 
         if result.returncode != 0:
