@@ -103,6 +103,115 @@ def _build_command(
     ]
 
 
-# Replaced with the real implementation in Task 5.
+# --- Build, download, transcribe -------------------------------------------
+def ensure_whisper_binary() -> Path:
+    """Build whisper.cpp on first use; return the whisper-cli path."""
+    if WHISPER_BIN.exists():
+        return WHISPER_BIN
+
+    if not (VENDOR_DIR / "CMakeLists.txt").exists():
+        raise WhisperCppError(
+            "whisper.cpp source not found. Initialize the submodule:\n"
+            "  git submodule update --init vendor/whisper.cpp"
+        )
+    if shutil.which("cmake") is None:
+        raise WhisperCppError(
+            "'cmake' not found. Install the Linux build toolchain with "
+            "'pixi install', or 'sudo apt install cmake build-essential'."
+        )
+
+    accel = detect_accel()
+    flags = accel_cmake_flags(accel)
+    log(f"Building whisper.cpp (accel={accel}, first run only)...")
+    try:
+        subprocess.run(
+            ["cmake", "-B", "build", *flags],
+            cwd=VENDOR_DIR, check=True, capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["cmake", "--build", "build", "-j", "--config", "Release"],
+            cwd=VENDOR_DIR, check=True, capture_output=True, text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        raise WhisperCppError(
+            f"whisper.cpp build failed (accel={accel}): {e.stderr or e}"
+        )
+
+    if not WHISPER_BIN.exists():
+        raise WhisperCppError(
+            f"Build succeeded but whisper-cli not found at {WHISPER_BIN}."
+        )
+    return WHISPER_BIN
+
+
+def _ensure_model_file(model: str) -> Path:
+    """Return a local GGML model path, downloading it on first use."""
+    # Allow a direct path to an existing .bin file.
+    direct = Path(model)
+    if direct.is_file():
+        return direct
+
+    fname = resolve_model_filename(model)
+    dest = MODEL_CACHE / fname
+    if dest.exists():
+        return dest
+
+    MODEL_CACHE.mkdir(parents=True, exist_ok=True)
+    url = HF_BASE + fname
+    log(f"Downloading whisper.cpp model {fname} (first use only)...")
+    tmp = dest.with_suffix(".tmp")
+    try:
+        urllib.request.urlretrieve(url, tmp)
+    except Exception as e:
+        raise WhisperCppError(f"Failed to download model {fname} from {url}: {e}")
+    tmp.rename(dest)
+    return dest
+
+
 class WhisperCppBackend:
+    """Transcription via the whisper.cpp whisper-cli subprocess."""
+
     name = "whispercpp"
+
+    def resolve_model(self, model: str) -> str:
+        return resolve_model_filename(model)
+
+    def describe(self) -> str:
+        return f"whisper.cpp ({detect_accel()})"
+
+    def transcribe(self, audio_path: Path, *, model: str, language: str | None) -> dict:
+        import json
+
+        binary = ensure_whisper_binary()
+        model_path = _ensure_model_file(model)
+        with tempfile.TemporaryDirectory() as td:
+            out_prefix = Path(td) / "out"
+            cmd = _build_command(binary, model_path, audio_path, out_prefix, language)
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise WhisperCppError(
+                    f"whisper.cpp failed (exit {result.returncode}): "
+                    f"{result.stderr.strip()}"
+                )
+            json_path = out_prefix.with_suffix(".json")
+            if not json_path.exists():
+                raise WhisperCppError(
+                    f"whisper.cpp produced no JSON output at {json_path}."
+                )
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+        return parse_whispercpp_json(data)
+
+
+def _main() -> None:
+    """python -m scribe_md.backends.whispercpp build pre-builds the binary."""
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == "build":
+        path = ensure_whisper_binary()
+        print(f"Built whisper.cpp: {path}")
+    else:
+        print("Usage: python -m scribe_md.backends.whispercpp build")
+
+
+if __name__ == "__main__":
+    _main()

@@ -75,3 +75,73 @@ def test_build_command_auto_language(tmp_path):
     cmd = w._build_command("/bin/whisper-cli", tmp_path / "m.bin",
                            tmp_path / "in.wav", tmp_path / "out", None)
     assert cmd[cmd.index("-l") + 1] == "auto"
+
+
+from pathlib import Path
+
+
+def test_ensure_binary_returns_existing(monkeypatch, tmp_path):
+    fake_bin = tmp_path / "whisper-cli"
+    fake_bin.write_text("")
+    monkeypatch.setattr(w, "WHISPER_BIN", fake_bin)
+    assert w.ensure_whisper_binary() == fake_bin
+
+
+def test_ensure_binary_errors_when_source_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr(w, "WHISPER_BIN", tmp_path / "absent" / "whisper-cli")
+    monkeypatch.setattr(w, "VENDOR_DIR", tmp_path / "empty-vendor")
+    with pytest.raises(w.WhisperCppError) as excinfo:
+        w.ensure_whisper_binary()
+    assert "submodule" in str(excinfo.value)
+
+
+def test_ensure_model_uses_existing_file(monkeypatch, tmp_path):
+    cache = tmp_path / "models"
+    cache.mkdir()
+    (cache / "ggml-small.bin").write_text("weights")
+    monkeypatch.setattr(w, "MODEL_CACHE", cache)
+    called = {"download": False}
+    monkeypatch.setattr(w.urllib.request, "urlretrieve",
+                        lambda *a, **k: called.__setitem__("download", True))
+    path = w._ensure_model_file("small")
+    assert path == cache / "ggml-small.bin"
+    assert called["download"] is False
+
+
+def test_transcribe_runs_cli_and_parses(monkeypatch, tmp_path):
+    wav = tmp_path / "in.wav"
+    wav.write_bytes(b"\x00" * 100)
+    monkeypatch.setattr(w, "ensure_whisper_binary", lambda: Path("/bin/whisper-cli"))
+    monkeypatch.setattr(w, "_ensure_model_file", lambda m: tmp_path / "m.bin")
+
+    def fake_run(cmd, **kwargs):
+        out_prefix = Path(cmd[cmd.index("-of") + 1])
+        out_prefix.with_suffix(".json").write_text(
+            '{"transcription": [{"offsets": {"from": 0, "to": 1000}, "text": " hi"}]}'
+        )
+        class R:
+            returncode = 0
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(w.subprocess, "run", fake_run)
+    result = w.WhisperCppBackend().transcribe(wav, model="small", language="en")
+    assert result["segments"][0]["text"] == "hi"
+    assert result["segments"][0]["end"] == 1.0
+
+
+def test_transcribe_raises_on_nonzero_exit(monkeypatch, tmp_path):
+    wav = tmp_path / "in.wav"
+    wav.write_bytes(b"\x00" * 100)
+    monkeypatch.setattr(w, "ensure_whisper_binary", lambda: Path("/bin/whisper-cli"))
+    monkeypatch.setattr(w, "_ensure_model_file", lambda m: tmp_path / "m.bin")
+
+    def fake_run(cmd, **kwargs):
+        class R:
+            returncode = 1
+            stderr = "vulkan device lost"
+        return R()
+
+    monkeypatch.setattr(w.subprocess, "run", fake_run)
+    with pytest.raises(w.WhisperCppError):
+        w.WhisperCppBackend().transcribe(wav, model="small", language=None)
