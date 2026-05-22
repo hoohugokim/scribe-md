@@ -8,6 +8,7 @@ platform-specific dependencies (e.g. ``mlx_whisper``).
 import os
 import sys
 
+from ..platform_support import is_macos, is_linux
 from .base import Backend
 
 __all__ = ["Backend", "get_backend"]
@@ -31,10 +32,10 @@ def get_backend() -> Backend:
             f"Unknown SCRIBE_MD_BACKEND={override!r}; expected 'mlx' or 'whispercpp'."
         )
 
-    if sys.platform == "darwin":
+    if is_macos():
         from .mlx import MLXBackend
         return MLXBackend()
-    if sys.platform.startswith("linux"):
+    if is_linux():
         from .whispercpp import WhisperCppBackend
         return WhisperCppBackend()
     raise RuntimeError(
