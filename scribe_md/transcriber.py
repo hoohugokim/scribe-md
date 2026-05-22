@@ -77,7 +77,7 @@ def extract_segments(
     """Extract normalized segments from a backend result.
 
     Filters out segments with high no_speech_prob to prevent hallucination
-    on silent audio.
+    on silent audio (e.g. Whisper generating "자막제공자" on silence).
     """
     segments = []
     for s in result.get("segments", []):

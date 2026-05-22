@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..transcriber import MODEL_PRESETS
+from ..transcriber import MODEL_PRESETS  # shared preset vocabulary (facade owns it)
 
 
 class MLXBackend:
@@ -19,6 +19,7 @@ class MLXBackend:
         return "MLX (Apple Silicon)"
 
     def transcribe(self, audio_path: Path, *, model: str, language: str | None) -> dict:
+        # Deferred import: mlx_whisper is macOS-only and unavailable on Linux.
         import mlx_whisper
 
         kwargs = {"path_or_hf_repo": self.resolve_model(model)}
