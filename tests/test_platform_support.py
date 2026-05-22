@@ -1,4 +1,5 @@
-# tests/test_platform_support.py
+"""Tests for the platform_support module — OS detection and install hints."""
+
 import scribe_md.platform_support as ps
 
 

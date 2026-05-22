@@ -1,4 +1,3 @@
-# scribe_md/platform_support.py
 """OS detection and platform-aware user hints.
 
 Named ``platform_support`` rather than ``platform`` to avoid shadowing the
