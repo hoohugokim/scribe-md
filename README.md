@@ -10,6 +10,9 @@ Uses [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)
 - [Pixi](https://pixi.sh) package manager
 - Xcode Command Line Tools (for live capture only)
 
+> **Linux (Pop!_OS / Ubuntu 24.04):** `file` and `url` commands are supported
+> via whisper.cpp with Vulkan/CUDA GPU acceleration. See [docs/LINUX.md](docs/LINUX.md).
+
 ## Installation
 
 ```bash
