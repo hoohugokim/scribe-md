@@ -32,3 +32,10 @@ def test_unsupported_platform_raises(monkeypatch):
     monkeypatch.setattr("sys.platform", "win32")
     with pytest.raises(RuntimeError):
         get_backend()
+
+
+def test_mlx_resolve_model_maps_preset():
+    from scribe_md.backends.mlx import MLXBackend
+    b = MLXBackend()
+    assert b.resolve_model("small") == "mlx-community/whisper-small-mlx"
+    assert b.resolve_model("some/custom-repo") == "some/custom-repo"

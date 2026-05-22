@@ -1,4 +1,10 @@
-"""Whisper transcription via mlx-whisper."""
+"""Transcription facade.
+
+Validates input, then delegates to the platform-selected backend
+(scribe_md.backends). MODEL_PRESETS/DEFAULT_MODEL remain here as the
+canonical, user-facing preset vocabulary (the MLX backend reuses them; the
+whisper.cpp backend maps the same names to GGML files).
+"""
 
 from pathlib import Path
 
@@ -17,7 +23,11 @@ DEFAULT_MODEL = "large-v3"
 
 
 def resolve_model(model: str) -> str:
-    """Resolve a model preset name or full path to a HF repo path."""
+    """Resolve a preset name or full path to an MLX HF repo path.
+
+    Retained for backward compatibility; per-backend resolution lives on each
+    backend's resolve_model method.
+    """
     return MODEL_PRESETS.get(model, model)
 
 
@@ -30,8 +40,7 @@ def transcribe_audio(
     model: str = DEFAULT_MODEL,
     language: str | None = None,
 ) -> dict:
-    """Transcribe a single audio file, returning the raw mlx-whisper result."""
-    # Validate input file
+    """Validate audio_path and transcribe it via the active backend."""
     if not audio_path.exists():
         raise TranscriptionError(f"Audio file not found: {audio_path}")
 
@@ -41,23 +50,20 @@ def transcribe_audio(
             f"Audio file is empty (0 bytes): {audio_path.name}. "
             "The recording may have failed or been interrupted."
         )
-
-    # A valid WAV header is at least 44 bytes
     if file_size < 44:
         raise TranscriptionError(
             f"Audio file is too small ({file_size} bytes): {audio_path.name}. "
             "The file may be corrupt."
         )
 
-    import mlx_whisper
+    from .backends import get_backend
 
-    kwargs = {"path_or_hf_repo": resolve_model(model)}
-    if language:
-        kwargs["language"] = language
-
-    log(f"Transcribing {audio_path.name}...")
+    backend = get_backend()
+    log(f"Transcribing {audio_path.name} via {backend.describe()}...")
     try:
-        return mlx_whisper.transcribe(str(audio_path), **kwargs)
+        return backend.transcribe(audio_path, model=model, language=language)
+    except TranscriptionError:
+        raise
     except Exception as e:
         raise TranscriptionError(
             f"Transcription failed for {audio_path.name}: {e}"
@@ -68,10 +74,10 @@ def extract_segments(
     result: dict,
     no_speech_threshold: float = 0.6,
 ) -> list[dict]:
-    """Extract normalized segments from a Whisper result.
+    """Extract normalized segments from a backend result.
 
     Filters out segments with high no_speech_prob to prevent hallucination
-    on silent audio (e.g. Whisper generating "자막제공자" on silence).
+    on silent audio.
     """
     segments = []
     for s in result.get("segments", []):
