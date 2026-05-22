@@ -10,6 +10,7 @@ import typer
 from rich.console import Console
 
 from . import audio, capture, diarize, downloader, merger, obsidian, postprocess, transcriber
+from . import platform_support
 from .audio import AudioConversionError, DiskFullError
 from .capture import CaptureError
 from .diarize import DiarizationError
@@ -215,6 +216,11 @@ def _apply_postprocessing(
         text = postprocess.clean_transcription(text)
 
     if summarize:
+        if platform_support.is_linux():
+            console.print(
+                "[red]Error:[/red] Summarization (mlx-lm) is macOS-only for now."
+            )
+            raise typer.Exit(1)
         try:
             model = summary_model or None
             summary = postprocess.summarize_with_llm(text, model=model)
@@ -848,6 +854,12 @@ def live(
     num_speakers: Optional[int] = typer.Option(None, "--num-speakers", help="Number of speakers (0 = auto-detect)"),
 ) -> None:
     """Capture and transcribe system audio in real-time."""
+    if platform_support.is_linux():
+        console.print(
+            "[red]Error:[/red] Live system-audio capture is macOS-only for now. "
+            "Use 'scribe-md file' or 'scribe-md url' on Linux."
+        )
+        raise typer.Exit(1)
     cfg = load_config()
     r_model = _resolve(model, cfg.model)
     r_language = _resolve_language(language, cfg)
