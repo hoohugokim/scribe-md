@@ -197,6 +197,19 @@ def _write_obsidian_output(
 # ---------------------------------------------------------------------------
 
 
+def _guard_summarize_on_linux(summarize: bool) -> None:
+    """Fail fast if --summarize is requested on Linux (mlx-lm is macOS-only).
+
+    Called at command entry so a long transcription is not wasted before the
+    user learns summarization is unavailable.
+    """
+    if summarize and platform_support.is_linux():
+        console.print(
+            "[red]Error:[/red] Summarization (mlx-lm) is macOS-only for now."
+        )
+        raise typer.Exit(1)
+
+
 def _apply_postprocessing(
     text: str,
     *,
@@ -216,11 +229,7 @@ def _apply_postprocessing(
         text = postprocess.clean_transcription(text)
 
     if summarize:
-        if platform_support.is_linux():
-            console.print(
-                "[red]Error:[/red] Summarization (mlx-lm) is macOS-only for now."
-            )
-            raise typer.Exit(1)
+        _guard_summarize_on_linux(summarize)
         try:
             model = summary_model or None
             summary = postprocess.summarize_with_llm(text, model=model)
@@ -483,6 +492,7 @@ def file(
     num_speakers: Optional[int] = typer.Option(None, "--num-speakers", help="Number of speakers (0 = auto-detect)"),
 ) -> None:
     """Transcribe an existing audio file to Markdown."""
+    _guard_summarize_on_linux(summarize)
     if not audio_file.exists():
         console.print(f"[red]Error:[/red] {audio_file} not found")
         raise typer.Exit(1)
@@ -633,6 +643,7 @@ def url(
     num_speakers: Optional[int] = typer.Option(None, "--num-speakers", help="Number of speakers (0 = auto-detect)"),
 ) -> None:
     """Transcribe audio from a YouTube URL to Markdown."""
+    _guard_summarize_on_linux(summarize)
     cfg = load_config()
     r_model = _resolve(model, cfg.model)
     r_language = _resolve_language(language, cfg)
