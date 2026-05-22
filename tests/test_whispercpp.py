@@ -145,3 +145,17 @@ def test_transcribe_raises_on_nonzero_exit(monkeypatch, tmp_path):
     monkeypatch.setattr(w.subprocess, "run", fake_run)
     with pytest.raises(w.WhisperCppError):
         w.WhisperCppBackend().transcribe(wav, model="small", language=None)
+
+
+def test_transcribe_wraps_oserror_from_subprocess(monkeypatch, tmp_path):
+    wav = tmp_path / "in.wav"
+    wav.write_bytes(b"\x00" * 100)
+    monkeypatch.setattr(w, "ensure_whisper_binary", lambda: Path("/bin/whisper-cli"))
+    monkeypatch.setattr(w, "_ensure_model_file", lambda m: tmp_path / "m.bin")
+
+    def boom(cmd, **kwargs):
+        raise OSError("not executable")
+
+    monkeypatch.setattr(w.subprocess, "run", boom)
+    with pytest.raises(w.WhisperCppError):
+        w.WhisperCppBackend().transcribe(wav, model="small", language="en")

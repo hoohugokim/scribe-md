@@ -7,6 +7,7 @@ engine (CPU / Vulkan / CUDA) is a build-time flag of the same binary.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -163,6 +164,7 @@ def _ensure_model_file(model: str) -> Path:
     try:
         urllib.request.urlretrieve(url, tmp)
     except Exception as e:
+        tmp.unlink(missing_ok=True)  # don't leave a partial download behind
         raise WhisperCppError(f"Failed to download model {fname} from {url}: {e}")
     tmp.rename(dest)
     return dest
@@ -180,14 +182,15 @@ class WhisperCppBackend:
         return f"whisper.cpp ({detect_accel()})"
 
     def transcribe(self, audio_path: Path, *, model: str, language: str | None) -> dict:
-        import json
-
         binary = ensure_whisper_binary()
         model_path = _ensure_model_file(model)
         with tempfile.TemporaryDirectory() as td:
             out_prefix = Path(td) / "out"
             cmd = _build_command(binary, model_path, audio_path, out_prefix, language)
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True)
+            except OSError as e:
+                raise WhisperCppError(f"Failed to run whisper-cli: {e}")
             if result.returncode != 0:
                 raise WhisperCppError(
                     f"whisper.cpp failed (exit {result.returncode}): "
