@@ -14,9 +14,12 @@ pixi run build-whisper      # builds whisper.cpp with auto-detected GPU backend
 pixi run scribe-md file recording.wav
 ```
 
-`build-whisper` auto-detects the accelerator: **Vulkan** if available (the
-default for both AMD and NVIDIA), **CUDA** if the toolkit is present, else
-**CPU**. Force a choice with `SCRIBE_MD_WHISPER_ACCEL=vulkan|cuda|cpu`.
+`build-whisper` auto-detects the accelerator in priority order: **CUDA** if the
+toolkit (`nvcc` + `nvidia-smi`) is present — which only happens once you opt into
+the `cuda` environment (see below) — otherwise **Vulkan** if available (the
+default for both AMD and NVIDIA), else **CPU**. Because the default environment
+ships no CUDA toolkit, a plain `pixi install` lands on Vulkan. Force a choice with
+`SCRIBE_MD_WHISPER_ACCEL=vulkan|cuda|cpu`.
 
 ## GPU notes
 
