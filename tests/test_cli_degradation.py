@@ -16,8 +16,9 @@ def test_live_is_macos_only_message_on_linux(monkeypatch):
 
 def test_summarize_blocked_on_linux(monkeypatch):
     monkeypatch.setattr("scribe_md.cli.platform_support.is_linux", lambda: True)
-    with pytest.raises(typer.Exit):
+    with pytest.raises(typer.Exit) as exc_info:
         _apply_postprocessing("some transcript text", summarize=True)
+    assert exc_info.value.exit_code == 1
 
 
 def test_summarize_allowed_on_macos(monkeypatch):
