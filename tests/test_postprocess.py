@@ -58,6 +58,21 @@ class TestCleanTranscription:
         assert "   " not in result
         assert "\n\n\n" not in result
 
+    def test_preserves_markdown_paragraph_breaks(self):
+        text = (
+            "[00:00:00] Hello everyone.\n\n"
+            "[00:00:03] Welcome to the lecture.\n\n"
+            "[00:00:30] Now a new topic.\n"
+        )
+        result = clean_transcription(text)
+        assert "[00:00:00] Hello everyone.\n\n[00:00:03]" in result
+        assert "[00:00:03] Welcome to the lecture.\n\n[00:00:30]" in result
+
+    def test_preserves_sentence_initial_you(self):
+        text = "Are you ready?\nYou came early.\nLet's go."
+        result = clean_transcription(text)
+        assert "You came early." in result
+
     def test_combined_artifacts(self):
         text = (
             "Introduction to the topic.\n"
@@ -121,6 +136,22 @@ class TestRemoveConsecutiveDuplicates:
         text = "Just one sentence."
         result = _remove_consecutive_duplicates(text)
         assert result == "Just one sentence."
+
+    def test_preserves_blank_lines_between_sentences(self):
+        text = "First sentence.\n\nSecond sentence."
+        result = _remove_consecutive_duplicates(text)
+        assert result == text
+
+    def test_dedupes_timestamped_adjacent_duplicates(self):
+        text = "[00:00:00] Hello there.\n\n[00:00:03] Hello there.\n\n[00:00:06] Next."
+        result = _remove_consecutive_duplicates(text)
+        assert result.count("Hello there") == 1
+        assert "[00:00:06] Next." in result
+
+    def test_dedupes_cjk_repeated_phrase_without_punctuation(self):
+        text = "안녕하세요 안녕하세요 안녕하세요"
+        result = _remove_consecutive_duplicates(text)
+        assert result == "안녕하세요"
 
 
 # ---------------------------------------------------------------------------

@@ -136,6 +136,13 @@ def split_audio(
     Each chunk (except the first) starts `overlap_seconds` before its nominal
     boundary so the merge step can deduplicate the overlap region.
     """
+    if chunk_seconds <= 0:
+        raise AudioConversionError("chunk_seconds must be greater than 0")
+    if overlap_seconds < 0:
+        raise AudioConversionError("overlap_seconds must not be negative")
+    if overlap_seconds >= chunk_seconds:
+        raise AudioConversionError("overlap_seconds must be less than chunk_seconds")
+
     duration = get_duration(input_path)
     chunks: list[Path] = []
     start = 0.0
