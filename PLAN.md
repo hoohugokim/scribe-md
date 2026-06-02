@@ -1,6 +1,6 @@
 # scribe-md — Development Plan
 
-## Current State (v0.1.1 — cross-platform CLI)
+## Current State (v0.2.0 — cross-platform CLI)
 
 ### What exists
 - **Swift CLI** (`capture/`): System-wide audio capture via ScreenCaptureKit → 48kHz stereo WAV, with chunked output, overlap buffer, proper per-channel buffer handling, and reliable signal handling (macOS only)
