@@ -4,7 +4,7 @@ import json
 import signal
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Annotated, Optional
 
 import typer
 from rich.console import Console
@@ -30,6 +30,38 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console(stderr=True)
+
+# ---------------------------------------------------------------------------
+# Shared CLI option types
+#
+# These options are byte-for-byte identical across the file/url/live commands,
+# so they are declared once here as Annotated aliases. Options whose help text
+# legitimately differs per command (chunk_seconds, incremental) stay inline.
+# ---------------------------------------------------------------------------
+
+_Output = Annotated[Optional[Path], typer.Option("--output", "-o", help="Output markdown path")]
+_Language = Annotated[Optional[str], typer.Option("--language", "-l", help="Language code (en, ko, etc.)")]
+_Model = Annotated[Optional[str], typer.Option(
+    "--model", "-m",
+    help="Whisper model name or preset (tiny, base, small, medium, large-v3)",
+)]
+_Timestamps = Annotated[Optional[bool], typer.Option("--timestamps/--no-timestamps", "-t/-T", help="Include timestamps")]
+_TimestampMode = Annotated[Optional[str], typer.Option(
+    "--timestamp-mode", help="Timestamp granularity: segment, paragraph, minute, or none",
+)]
+_ParagraphGap = Annotated[Optional[float], typer.Option(
+    "--paragraph-gap", help="Seconds of silence to trigger a paragraph break",
+)]
+_OverlapSeconds = Annotated[Optional[float], typer.Option("--overlap-seconds", help="Overlap between chunks")]
+_Vault = Annotated[Optional[str], typer.Option("--vault", help="Obsidian vault path (overrides config)")]
+_DailyNote = Annotated[bool, typer.Option("--daily-note", help="Append to today's daily note")]
+_Frontmatter = Annotated[Optional[bool], typer.Option("--frontmatter/--no-frontmatter", help="Include YAML frontmatter (default: on when vault is set)")]
+_Clean = Annotated[Optional[bool], typer.Option("--clean", help="Apply rule-based artifact cleaning to the transcription")]
+_Summarize = Annotated[bool, typer.Option("--summarize", help="Append an LLM-generated summary (requires mlx-lm)")]
+_SummaryModel = Annotated[Optional[str], typer.Option("--summary-model", help="Override the LLM model for summarization")]
+_Diarize = Annotated[Optional[bool], typer.Option("--diarize/--no-diarize", help="Enable speaker diarization (requires pyannote-audio)")]
+_HfToken = Annotated[Optional[str], typer.Option("--hf-token", help="HuggingFace token for diarization model")]
+_NumSpeakers = Annotated[Optional[int], typer.Option("--num-speakers", help="Number of speakers (0 = auto-detect)")]
 
 # ---------------------------------------------------------------------------
 # Config subcommand group
@@ -190,6 +222,43 @@ def _write_obsidian_output(
         output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(text, encoding="utf-8")
     log(f"Wrote {output}")
+
+
+def _validate_daily_note(daily_note: bool, vault: str) -> None:
+    """Fail fast when daily-note output is requested without a vault."""
+    if daily_note and not vault:
+        console.print(
+            "[red]Error:[/red] --daily-note requires --vault or obsidian.vault "
+            "in the config."
+        )
+        raise typer.Exit(1)
+
+
+def _should_chunk(duration: float, chunk_seconds: float) -> bool:
+    """Return whether an input should use the chunked pipeline."""
+    return chunk_seconds > 0 and duration > chunk_seconds
+
+
+def _resolve_incremental_output(
+    output: Path,
+    *,
+    vault: str,
+    daily_note: bool,
+    incremental: bool,
+) -> tuple[bool, Path | None]:
+    """Resolve where incremental drafts should be written, if enabled."""
+    if not incremental:
+        return False, None
+
+    vault_path = Path(vault).expanduser().resolve() if vault else None
+    if daily_note and vault_path:
+        log("Incremental output disabled for daily-note output.")
+        return False, None
+
+    if vault_path and not output.is_absolute():
+        return True, obsidian.resolve_vault_output(vault_path, output.name)
+
+    return True, output
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +429,7 @@ def _transcribe_chunked(
     timestamp_mode: str = "segment",
     paragraph_gap: float = 2.0,
     incremental: bool = False,
+    incremental_output: Path | None = None,
     write_fn=None,
     clean: bool = False,
     summarize: bool = False,
@@ -387,13 +457,15 @@ def _transcribe_chunked(
 
         log(f"Splitting into {chunk_seconds}s chunks...")
         chunks = audio.split_audio(audio_path, tmp_dir, chunk_seconds, overlap_seconds)
+        draft_output = incremental_output or output
 
         # Clear the output file before writing incremental results
         if incremental:
-            output.write_text("", encoding="utf-8")
+            draft_output.parent.mkdir(parents=True, exist_ok=True)
+            draft_output.write_text("", encoding="utf-8")
 
         all_segments = _transcribe_chunks_sequential(
-            chunks, model, language, output,
+            chunks, model, language, draft_output,
             incremental=incremental,
         )
 
@@ -458,38 +530,29 @@ def _transcribe_chunks_sequential(
 @app.command()
 def file(
     audio_file: Path = typer.Argument(..., help="Path to audio file (WAV, MP3, etc.)"),
-    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output markdown path"),
-    language: Optional[str] = typer.Option(None, "--language", "-l", help="Language code (en, ko, etc.)"),
-    model: Optional[str] = typer.Option(
-        None, "--model", "-m",
-        help="Whisper model name or preset (tiny, base, small, medium, large-v3)",
-    ),
-    timestamps: Optional[bool] = typer.Option(None, "--timestamps/--no-timestamps", "-t/-T", help="Include timestamps"),
-    timestamp_mode: Optional[str] = typer.Option(
-        None, "--timestamp-mode",
-        help="Timestamp granularity: segment, paragraph, minute, or none",
-    ),
-    paragraph_gap: Optional[float] = typer.Option(
-        None, "--paragraph-gap",
-        help="Seconds of silence to trigger a paragraph break",
-    ),
+    output: _Output = None,
+    language: _Language = None,
+    model: _Model = None,
+    timestamps: _Timestamps = None,
+    timestamp_mode: _TimestampMode = None,
+    paragraph_gap: _ParagraphGap = None,
     chunk_seconds: Optional[float] = typer.Option(
         None, "--chunk-seconds", help="Chunk duration for long files (seconds)",
     ),
-    overlap_seconds: Optional[float] = typer.Option(None, "--overlap-seconds", help="Overlap between chunks"),
+    overlap_seconds: _OverlapSeconds = None,
     incremental: Optional[bool] = typer.Option(
         None, "--incremental/--no-incremental",
         help="Write chunks to output file incrementally (default: off)",
     ),
-    vault: Optional[str] = typer.Option(None, "--vault", help="Obsidian vault path (overrides config)"),
-    daily_note: bool = typer.Option(False, "--daily-note", help="Append to today's daily note"),
-    frontmatter: Optional[bool] = typer.Option(None, "--frontmatter/--no-frontmatter", help="Include YAML frontmatter (default: on when vault is set)"),
-    clean: Optional[bool] = typer.Option(None, "--clean", help="Apply rule-based artifact cleaning to the transcription"),
-    summarize: bool = typer.Option(False, "--summarize", help="Append an LLM-generated summary (requires mlx-lm)"),
-    summary_model: Optional[str] = typer.Option(None, "--summary-model", help="Override the LLM model for summarization"),
-    diarize_flag: Optional[bool] = typer.Option(None, "--diarize/--no-diarize", help="Enable speaker diarization (requires pyannote-audio)"),
-    hf_token: Optional[str] = typer.Option(None, "--hf-token", help="HuggingFace token for diarization model"),
-    num_speakers: Optional[int] = typer.Option(None, "--num-speakers", help="Number of speakers (0 = auto-detect)"),
+    vault: _Vault = None,
+    daily_note: _DailyNote = False,
+    frontmatter: _Frontmatter = None,
+    clean: _Clean = None,
+    summarize: _Summarize = False,
+    summary_model: _SummaryModel = None,
+    diarize_flag: _Diarize = None,
+    hf_token: _HfToken = None,
+    num_speakers: _NumSpeakers = None,
 ) -> None:
     """Transcribe an existing audio file to Markdown."""
     _guard_summarize_on_linux(summarize)
@@ -521,6 +584,7 @@ def file(
     # Frontmatter defaults to True when vault is set
     r_frontmatter = frontmatter if frontmatter is not None else bool(r_vault)
 
+    _validate_daily_note(daily_note, r_vault)
     _validate_timestamp_mode(r_timestamp_mode)
     ts, ts_mode = _resolve_timestamp_flags(r_timestamps, r_timestamp_mode)
     if output:
@@ -559,12 +623,17 @@ def file(
                     num_speakers=r_num_speakers,
                 )
 
-            if file_duration > r_chunk_seconds:
+            if _should_chunk(file_duration, r_chunk_seconds):
+                incremental_enabled, incremental_output = _resolve_incremental_output(
+                    out, vault=r_vault, daily_note=daily_note,
+                    incremental=r_incremental,
+                )
                 _transcribe_chunked(
                     converted, out, r_model, r_language, ts,
                     r_chunk_seconds, r_overlap_seconds,
                     timestamp_mode=ts_mode, paragraph_gap=r_paragraph_gap,
-                    incremental=r_incremental,
+                    incremental=incremental_enabled,
+                    incremental_output=incremental_output,
                     write_fn=write_fn,
                     clean=r_clean, summarize=summarize,
                     summary_model=r_summary_model,
@@ -609,38 +678,29 @@ def file(
 @app.command()
 def url(
     video_url: str = typer.Argument(..., help="YouTube URL or playlist URL"),
-    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output markdown path"),
-    language: Optional[str] = typer.Option(None, "--language", "-l", help="Language code (en, ko, etc.)"),
-    model: Optional[str] = typer.Option(
-        None, "--model", "-m",
-        help="Whisper model name or preset (tiny, base, small, medium, large-v3)",
-    ),
-    timestamps: Optional[bool] = typer.Option(None, "--timestamps/--no-timestamps", "-t/-T", help="Include timestamps"),
-    timestamp_mode: Optional[str] = typer.Option(
-        None, "--timestamp-mode",
-        help="Timestamp granularity: segment, paragraph, minute, or none",
-    ),
-    paragraph_gap: Optional[float] = typer.Option(
-        None, "--paragraph-gap",
-        help="Seconds of silence to trigger a paragraph break",
-    ),
+    output: _Output = None,
+    language: _Language = None,
+    model: _Model = None,
+    timestamps: _Timestamps = None,
+    timestamp_mode: _TimestampMode = None,
+    paragraph_gap: _ParagraphGap = None,
     chunk_seconds: Optional[float] = typer.Option(
         None, "--chunk-seconds", help="Chunk duration for long videos (seconds)",
     ),
-    overlap_seconds: Optional[float] = typer.Option(None, "--overlap-seconds", help="Overlap between chunks"),
+    overlap_seconds: _OverlapSeconds = None,
     incremental: Optional[bool] = typer.Option(
         None, "--incremental/--no-incremental",
         help="Write chunks to output file incrementally (default: off)",
     ),
-    vault: Optional[str] = typer.Option(None, "--vault", help="Obsidian vault path (overrides config)"),
-    daily_note: bool = typer.Option(False, "--daily-note", help="Append to today's daily note"),
-    frontmatter: Optional[bool] = typer.Option(None, "--frontmatter/--no-frontmatter", help="Include YAML frontmatter (default: on when vault is set)"),
-    clean: Optional[bool] = typer.Option(None, "--clean", help="Apply rule-based artifact cleaning to the transcription"),
-    summarize: bool = typer.Option(False, "--summarize", help="Append an LLM-generated summary (requires mlx-lm)"),
-    summary_model: Optional[str] = typer.Option(None, "--summary-model", help="Override the LLM model for summarization"),
-    diarize_flag: Optional[bool] = typer.Option(None, "--diarize/--no-diarize", help="Enable speaker diarization (requires pyannote-audio)"),
-    hf_token: Optional[str] = typer.Option(None, "--hf-token", help="HuggingFace token for diarization model"),
-    num_speakers: Optional[int] = typer.Option(None, "--num-speakers", help="Number of speakers (0 = auto-detect)"),
+    vault: _Vault = None,
+    daily_note: _DailyNote = False,
+    frontmatter: _Frontmatter = None,
+    clean: _Clean = None,
+    summarize: _Summarize = False,
+    summary_model: _SummaryModel = None,
+    diarize_flag: _Diarize = None,
+    hf_token: _HfToken = None,
+    num_speakers: _NumSpeakers = None,
 ) -> None:
     """Transcribe audio from a YouTube URL to Markdown."""
     _guard_summarize_on_linux(summarize)
@@ -664,13 +724,16 @@ def url(
     # Frontmatter defaults to True when vault is set
     r_frontmatter = frontmatter if frontmatter is not None else bool(r_vault)
 
+    _validate_daily_note(daily_note, r_vault)
     _validate_timestamp_mode(r_timestamp_mode)
     ts, ts_mode = _resolve_timestamp_flags(r_timestamps, r_timestamp_mode)
 
     try:
-        # Check if this is a playlist
-        if downloader.is_playlist(video_url):
-            entries = downloader.get_playlist_entries(video_url)
+        # One metadata fetch both decides playlist-vs-single (>1 entry means a
+        # playlist) and supplies titles, so we neither repeat the
+        # --flat-playlist call nor re-fetch per-video metadata during download.
+        entries = downloader.get_playlist_entries(video_url)
+        if len(entries) > 1:
             log(f"Playlist with {len(entries)} videos")
 
             for i, entry in enumerate(entries):
@@ -693,12 +756,17 @@ def url(
                         diarize_enabled=r_diarize, hf_token=r_hf_token,
                         num_speakers=r_num_speakers,
                         output_directory=cfg.output_directory,
+                        title=entry_title,
                     )
                 except DiskFullError:
                     raise  # Disk-full is fatal even for playlists
+                except typer.Exit:
+                    raise
                 except Exception as e:
                     console.print(f"[yellow]Skipping: {e}[/yellow]")
         else:
+            # entries[0] (when present) carries the title for the single video.
+            single_title = entries[0].get("title") if entries else None
             _transcribe_url(
                 video_url, output=output, model=r_model, language=r_language,
                 timestamps=ts, chunk_seconds=r_chunk_seconds,
@@ -713,11 +781,12 @@ def url(
                 diarize_enabled=r_diarize, hf_token=r_hf_token,
                 num_speakers=r_num_speakers,
                 output_directory=cfg.output_directory,
+                title=single_title,
             )
     except (DiarizationError, ImportError) as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
-    except (AudioConversionError, TranscriptionError) as e:
+    except (AudioConversionError, TranscriptionError, downloader.DownloadError) as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
     except DiskFullError as e:
@@ -756,13 +825,14 @@ def _transcribe_url(
     hf_token: str = "",
     num_speakers: int = 0,
     output_directory: str = ".",
+    title: str | None = None,
 ) -> None:
     """Download and transcribe a single video URL."""
     with tempfile.TemporaryDirectory(prefix="scribe-md-dl-") as tmp:
         tmp_dir = Path(tmp)
 
-        # Download audio
-        raw_audio, title = downloader.download_audio(video_url, tmp_dir)
+        # Download audio (reusing a known title skips a metadata round-trip)
+        raw_audio, title = downloader.download_audio(video_url, tmp_dir, title=title)
 
         # Convert to 16kHz mono
         converted = tmp_dir / "converted.wav"
@@ -799,12 +869,17 @@ def _transcribe_url(
                 converted, hf_token=hf_token, num_speakers=num_speakers,
             )
 
-        if duration > chunk_seconds:
+        if _should_chunk(duration, chunk_seconds):
+            incremental_enabled, incremental_output = _resolve_incremental_output(
+                out, vault=vault, daily_note=daily_note,
+                incremental=incremental,
+            )
             _transcribe_chunked(
                 converted, out, model, language, timestamps,
                 chunk_seconds, overlap_seconds,
                 timestamp_mode=timestamp_mode, paragraph_gap=paragraph_gap,
-                incremental=incremental,
+                incremental=incremental_enabled,
+                incremental_output=incremental_output,
                 write_fn=write_fn,
                 clean=clean, summarize=summarize,
                 summary_model=summary_model,
@@ -828,41 +903,32 @@ def _transcribe_url(
 
 @app.command()
 def live(
-    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output markdown path"),
+    output: _Output = None,
     duration: Optional[float] = typer.Option(None, "--duration", "-d", help="Recording duration (seconds)"),
-    language: Optional[str] = typer.Option(None, "--language", "-l", help="Language code (en, ko, etc.)"),
-    model: Optional[str] = typer.Option(
-        None, "--model", "-m",
-        help="Whisper model name or preset (tiny, base, small, medium, large-v3)",
-    ),
-    timestamps: Optional[bool] = typer.Option(None, "--timestamps/--no-timestamps", "-t/-T", help="Include timestamps"),
-    timestamp_mode: Optional[str] = typer.Option(
-        None, "--timestamp-mode",
-        help="Timestamp granularity: segment, paragraph, minute, or none",
-    ),
-    paragraph_gap: Optional[float] = typer.Option(
-        None, "--paragraph-gap",
-        help="Seconds of silence to trigger a paragraph break",
-    ),
+    language: _Language = None,
+    model: _Model = None,
+    timestamps: _Timestamps = None,
+    timestamp_mode: _TimestampMode = None,
+    paragraph_gap: _ParagraphGap = None,
     chunk_seconds: Optional[float] = typer.Option(
         None, "--chunk-seconds", help="Enable chunked pipeline (transcribe every N seconds)",
     ),
-    overlap_seconds: Optional[float] = typer.Option(None, "--overlap-seconds", help="Overlap between chunks"),
+    overlap_seconds: _OverlapSeconds = None,
     keep_audio: Optional[bool] = typer.Option(None, "--keep-audio", help="Keep intermediate WAV files"),
     app_name: Optional[list[str]] = typer.Option(None, "--app", "-a", help="Capture from specific app(s) (repeatable)"),
     incremental: Optional[bool] = typer.Option(
         None, "--incremental/--no-incremental",
         help="Write chunks to output file incrementally (default: on for live)",
     ),
-    vault: Optional[str] = typer.Option(None, "--vault", help="Obsidian vault path (overrides config)"),
-    daily_note: bool = typer.Option(False, "--daily-note", help="Append to today's daily note"),
-    frontmatter: Optional[bool] = typer.Option(None, "--frontmatter/--no-frontmatter", help="Include YAML frontmatter (default: on when vault is set)"),
-    clean: Optional[bool] = typer.Option(None, "--clean", help="Apply rule-based artifact cleaning to the transcription"),
-    summarize: bool = typer.Option(False, "--summarize", help="Append an LLM-generated summary (requires mlx-lm)"),
-    summary_model: Optional[str] = typer.Option(None, "--summary-model", help="Override the LLM model for summarization"),
-    diarize_flag: Optional[bool] = typer.Option(None, "--diarize/--no-diarize", help="Enable speaker diarization (requires pyannote-audio)"),
-    hf_token: Optional[str] = typer.Option(None, "--hf-token", help="HuggingFace token for diarization model"),
-    num_speakers: Optional[int] = typer.Option(None, "--num-speakers", help="Number of speakers (0 = auto-detect)"),
+    vault: _Vault = None,
+    daily_note: _DailyNote = False,
+    frontmatter: _Frontmatter = None,
+    clean: _Clean = None,
+    summarize: _Summarize = False,
+    summary_model: _SummaryModel = None,
+    diarize_flag: _Diarize = None,
+    hf_token: _HfToken = None,
+    num_speakers: _NumSpeakers = None,
 ) -> None:
     """Capture and transcribe system audio in real-time."""
     if platform_support.is_linux():
@@ -898,6 +964,7 @@ def live(
     # Frontmatter defaults to True when vault is set
     r_frontmatter = frontmatter if frontmatter is not None else bool(r_vault)
 
+    _validate_daily_note(daily_note, r_vault)
     _validate_timestamp_mode(r_timestamp_mode)
     ts, ts_mode = _resolve_timestamp_flags(r_timestamps, r_timestamp_mode)
 
@@ -921,11 +988,16 @@ def live(
 
     try:
         if r_chunk_seconds > 0:
+            incremental_enabled, incremental_output = _resolve_incremental_output(
+                r_output, vault=r_vault, daily_note=daily_note,
+                incremental=r_incremental,
+            )
             _live_chunked(
                 r_output, duration, r_language, r_model, ts,
                 r_chunk_seconds, r_overlap_seconds, r_keep_audio, apps,
                 timestamp_mode=ts_mode, paragraph_gap=r_paragraph_gap,
-                incremental=r_incremental,
+                incremental=incremental_enabled,
+                incremental_output=incremental_output,
                 write_fn=write_fn,
                 clean=r_clean, summarize=summarize,
                 summary_model=r_summary_model,
@@ -1006,6 +1078,7 @@ def _live_single(
             proc.wait()
         finally:
             signal.signal(signal.SIGINT, original_sigint)
+            capture.terminate_capture(proc)
 
         if cancelled or proc.returncode != 0:
             log("Recording cancelled.")
@@ -1058,6 +1131,7 @@ def _live_chunked(
     timestamp_mode: str = "segment",
     paragraph_gap: float = 2.0,
     incremental: bool = False,
+    incremental_output: Path | None = None,
     write_fn=None,
     clean: bool = False,
     summarize: bool = False,
@@ -1091,10 +1165,12 @@ def _live_chunked(
 
         chunk_jsons: list[Path] = []
         chunk_idx = 0
+        draft_output = incremental_output or output
 
         # Clear the output file before writing incremental results
         if incremental:
-            output.write_text("", encoding="utf-8")
+            draft_output.parent.mkdir(parents=True, exist_ok=True)
+            draft_output.write_text("", encoding="utf-8")
 
         try:
             # Read chunk paths from capture's stdout
@@ -1127,7 +1203,7 @@ def _live_chunked(
                     chunk_jsons.append(chunk_json)
 
                     if incremental:
-                        _append_incremental(output, segments)
+                        _append_incremental(draft_output, segments)
                 except DiskFullError:
                     raise  # Disk-full is fatal — stop immediately
                 except Exception as e:
@@ -1138,6 +1214,7 @@ def _live_chunked(
             proc.wait()
         finally:
             signal.signal(signal.SIGINT, original_sigint)
+            capture.terminate_capture(proc)
 
         if not chunk_jsons:
             log("No chunks were transcribed.")
@@ -1178,7 +1255,7 @@ def _live_chunked(
             import shutil
             saved_dir = output.parent / f"chunks_{output.stem}"
             saved_dir.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(tmp_dir, saved_dir)
+            shutil.copytree(tmp_dir, saved_dir, dirs_exist_ok=True)
             log(f"Audio saved: {saved_dir}")
 
 

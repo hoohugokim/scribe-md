@@ -22,15 +22,6 @@ MODEL_PRESETS = {
 DEFAULT_MODEL = "large-v3"
 
 
-def resolve_model(model: str) -> str:
-    """Resolve a preset name or full path to an MLX HF repo path.
-
-    Retained for backward compatibility; per-backend resolution lives on each
-    backend's resolve_model method.
-    """
-    return MODEL_PRESETS.get(model, model)
-
-
 class TranscriptionError(RuntimeError):
     """Raised when transcription fails due to invalid input or runtime errors."""
 

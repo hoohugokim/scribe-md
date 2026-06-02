@@ -17,10 +17,6 @@ class Backend(Protocol):
 
     name: str
 
-    def resolve_model(self, model: str) -> str:
-        """Map a preset name (or pass-through path) to a backend-specific ref."""
-        ...
-
     def transcribe(self, audio_path: Path, *, model: str, language: str | None) -> dict:
         """Transcribe a 16 kHz mono WAV, returning a result dict."""
         ...

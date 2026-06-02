@@ -27,6 +27,17 @@ def format_duration(seconds: float) -> str:
     return f"{m}:{s:02d}"
 
 
+def _safe_subfolder(folder: str) -> str:
+    """Reduce a configured subfolder to a safe vault-relative path.
+
+    Strips leading separators/anchors and drops ``..``/``.`` components so a
+    value from an auto-discovered ``.scribe-md.toml`` (e.g. ``../../secrets``)
+    cannot write outside the vault. Returns ``""`` if nothing safe remains.
+    """
+    parts = [p for p in Path(folder).parts if p not in ("..", ".", "/", "\\")]
+    return str(Path(*parts)) if parts else ""
+
+
 def _yaml_quote(value: str) -> str:
     """Wrap a string as a YAML double-quoted scalar with proper escaping.
 
@@ -108,7 +119,7 @@ def append_to_daily_note(
     date_str = now.strftime("%Y-%m-%d")
     time_str = now.strftime("%H:%M")
 
-    daily_dir = vault_path / daily_folder
+    daily_dir = vault_path / _safe_subfolder(daily_folder)
     daily_dir.mkdir(parents=True, exist_ok=True)
     note_path = daily_dir / f"{date_str}.md"
 

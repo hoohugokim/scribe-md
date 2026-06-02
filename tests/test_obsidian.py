@@ -4,6 +4,8 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 from scribe_md.obsidian import (
     append_to_daily_note,
     build_frontmatter,
@@ -11,6 +13,31 @@ from scribe_md.obsidian import (
     resolve_vault_output,
     write_with_frontmatter,
 )
+
+
+# ---------------------------------------------------------------------------
+# Path-traversal confinement (daily_note_folder from auto-discovered config)
+# ---------------------------------------------------------------------------
+
+
+class TestDailyNoteConfinement:
+    def test_daily_folder_cannot_escape_vault(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        note = append_to_daily_note(vault, "../../escape", "body", {"source": "s"})
+        assert note.resolve().is_relative_to(vault.resolve())
+
+    def test_absolute_daily_folder_cannot_escape_vault(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        note = append_to_daily_note(vault, "/etc", "body", {"source": "s"})
+        assert note.resolve().is_relative_to(vault.resolve())
+
+    def test_normal_daily_folder_preserved(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        note = append_to_daily_note(vault, "Daily Notes", "body", {"source": "s"})
+        assert note.parent == vault / "Daily Notes"
 
 
 # ---------------------------------------------------------------------------

@@ -20,9 +20,15 @@ from ..utils import log
 
 # --- Paths -----------------------------------------------------------------
 VENDOR_DIR = Path(__file__).resolve().parents[2] / "vendor" / "whisper.cpp"
-WHISPER_BIN = VENDOR_DIR / "build" / "bin" / "whisper-cli"
+BUILD_DIR = VENDOR_DIR / "build"
+WHISPER_BIN = BUILD_DIR / "bin" / "whisper-cli"
+ACCEL_MARKER = BUILD_DIR / ".scribe_accel"  # records the accel the binary was built with
 MODEL_CACHE = Path.home() / ".cache" / "scribe-md" / "models"
 HF_BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/"
+
+# The smallest GGML weights (tiny) are tens of MB; anything well below this is a
+# truncated download or an HTML error page, never a real model.
+_MIN_MODEL_BYTES = 1_000_000
 
 # --- Model presets (GGML single-file weights) ------------------------------
 GGML_MODELS = {
@@ -70,17 +76,34 @@ def accel_cmake_flags(accel: str) -> list[str]:
     return {"cuda": ["-DGGML_CUDA=1"], "vulkan": ["-DGGML_VULKAN=1"], "cpu": []}[accel]
 
 
+def _probe_ok(args: list[str]) -> bool:
+    """Run a quick GPU probe; True only if it exits 0 (a usable device).
+
+    Mere presence of a tool on PATH is not enough — pixi installs
+    ``vulkan-tools`` on every Linux box, so ``vulkaninfo`` exists even where no
+    GPU/driver does. Running it and checking the exit code distinguishes a
+    usable device from a headless/driverless machine.
+    """
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
 def detect_accel() -> str:
     """Pick the best build-time accelerator: cuda > vulkan > cpu.
 
-    Overridable with ``SCRIBE_MD_WHISPER_ACCEL=cuda|vulkan|cpu``.
+    Overridable with ``SCRIBE_MD_WHISPER_ACCEL=cuda|vulkan|cpu``. Auto-detection
+    requires both the tool on PATH *and* a successful probe, so a missing
+    driver falls back to CPU instead of building for a device that isn't there.
     """
     override = os.environ.get("SCRIBE_MD_WHISPER_ACCEL", "").strip().lower()
     if override in ("cuda", "vulkan", "cpu"):
         return override
-    if shutil.which("nvcc") and shutil.which("nvidia-smi"):
+    if shutil.which("nvcc") and shutil.which("nvidia-smi") and _probe_ok(["nvidia-smi"]):
         return "cuda"
-    if shutil.which("vulkaninfo"):
+    if shutil.which("vulkaninfo") and _probe_ok(["vulkaninfo"]):
         return "vulkan"
     return "cpu"
 
@@ -105,10 +128,43 @@ def _build_command(
 
 
 # --- Build, download, transcribe -------------------------------------------
+def _read_built_accel() -> str | None:
+    """Return the accelerator recorded for the cached binary, if any."""
+    try:
+        return ACCEL_MARKER.read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
+def _record_built_accel(accel: str) -> None:
+    """Record which accelerator the freshly built binary uses.
+
+    A missing marker only costs a future rebuild, never correctness, so any
+    write failure is swallowed.
+    """
+    try:
+        ACCEL_MARKER.write_text(accel, encoding="utf-8")
+    except OSError:
+        pass
+
+
 def ensure_whisper_binary() -> Path:
-    """Build whisper.cpp on first use; return the whisper-cli path."""
+    """Build whisper.cpp on first use; return the whisper-cli path.
+
+    Rebuilds when the cached binary was built for a different accelerator than
+    the one now detected (e.g. a CUDA toolkit was installed, or
+    ``SCRIBE_MD_WHISPER_ACCEL`` changed). A binary with no recorded
+    accelerator — an older build, or one produced by ``pixi run
+    build-whisper`` — is trusted as-is to avoid surprise rebuilds.
+    """
+    accel = detect_accel()
+
     if WHISPER_BIN.exists():
-        return WHISPER_BIN
+        built = _read_built_accel()
+        if built is None or built == accel:
+            return WHISPER_BIN
+        log(f"Rebuilding whisper.cpp: accelerator changed ({built} -> {accel}).")
+        shutil.rmtree(BUILD_DIR, ignore_errors=True)
 
     if not (VENDOR_DIR / "CMakeLists.txt").exists():
         raise WhisperCppError(
@@ -121,9 +177,8 @@ def ensure_whisper_binary() -> Path:
             "'pixi install', or 'sudo apt install cmake build-essential'."
         )
 
-    accel = detect_accel()
     flags = accel_cmake_flags(accel)
-    log(f"Building whisper.cpp (accel={accel}, first run only)...")
+    log(f"Building whisper.cpp (accel={accel})...")
     try:
         subprocess.run(
             ["cmake", "-B", "build", *flags],
@@ -142,7 +197,31 @@ def ensure_whisper_binary() -> Path:
         raise WhisperCppError(
             f"Build succeeded but whisper-cli not found at {WHISPER_BIN}."
         )
+    _record_built_accel(accel)
     return WHISPER_BIN
+
+
+def _validate_download(path: Path, headers, fname: str, url: str) -> None:
+    """Reject obviously-bad downloads before they poison the cache.
+
+    Catches the two failure modes ``urlretrieve`` does not: a 200 response whose
+    body is an HTML error page (captive portal / proxy / HF maintenance), and a
+    body silently truncated to a few bytes.
+    """
+    content_type = ""
+    if headers is not None:
+        content_type = (headers.get("Content-Type") or "").lower()
+    if "html" in content_type:
+        raise WhisperCppError(
+            f"Download of {fname} from {url} returned HTML, not a model file "
+            "(a proxy, captive portal, or error page?). Check your connection."
+        )
+    size = path.stat().st_size
+    if size < _MIN_MODEL_BYTES:
+        raise WhisperCppError(
+            f"Downloaded model {fname} is only {size} bytes — too small to be a "
+            "valid model (truncated download or error page). Try again."
+        )
 
 
 def _ensure_model_file(model: str) -> Path:
@@ -154,19 +233,31 @@ def _ensure_model_file(model: str) -> Path:
 
     fname = resolve_model_filename(model)
     dest = MODEL_CACHE / fname
+    # A model name from an auto-discovered .scribe-md.toml is semi-trusted;
+    # never let it steer the download outside the cache.
+    if not dest.resolve().is_relative_to(MODEL_CACHE.resolve()):
+        raise WhisperCppError(
+            f"Model name {model!r} resolves outside the model cache; refusing."
+        )
     if dest.exists():
         return dest
 
     MODEL_CACHE.mkdir(parents=True, exist_ok=True)
     url = HF_BASE + fname
     log(f"Downloading whisper.cpp model {fname} (first use only)...")
-    tmp = dest.with_suffix(".tmp")
+    # A process-unique temp name keeps two concurrent runs from clobbering a
+    # shared path; os.replace then publishes the result atomically.
+    tmp = dest.with_name(f"{fname}.{os.getpid()}.tmp")
     try:
-        urllib.request.urlretrieve(url, tmp)
+        _, headers = urllib.request.urlretrieve(url, tmp)
+        _validate_download(tmp, headers, fname, url)
+    except WhisperCppError:
+        tmp.unlink(missing_ok=True)
+        raise
     except Exception as e:
         tmp.unlink(missing_ok=True)  # don't leave a partial download behind
         raise WhisperCppError(f"Failed to download model {fname} from {url}: {e}")
-    tmp.rename(dest)
+    os.replace(tmp, dest)
     return dest
 
 
@@ -175,11 +266,10 @@ class WhisperCppBackend:
 
     name = "whispercpp"
 
-    def resolve_model(self, model: str) -> str:
-        return resolve_model_filename(model)
-
     def describe(self) -> str:
-        return f"whisper.cpp ({detect_accel()})"
+        # Report what the binary was actually built with (the marker), falling
+        # back to live detection only when no build has been recorded yet.
+        return f"whisper.cpp ({_read_built_accel() or detect_accel()})"
 
     def transcribe(self, audio_path: Path, *, model: str, language: str | None) -> dict:
         binary = ensure_whisper_binary()
