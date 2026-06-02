@@ -147,3 +147,74 @@ class TestResolveIncrementalOutput:
             Path("out.md"), vault="", daily_note=False, incremental=True
         )
         assert enabled is True and draft == Path("out.md")
+
+
+# ---------------------------------------------------------------------------
+# _resolve_common_options  (the shared file/url/live resolution block)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_common(cfg, **overrides):
+    """Call _resolve_common_options with all CLI inputs defaulting to None."""
+    kwargs = dict(
+        model=None, language=None, timestamps=None, timestamp_mode=None,
+        paragraph_gap=None, overlap_seconds=None, vault=None, daily_note=False,
+        frontmatter=None, clean=None, summary_model=None, diarize_flag=None,
+        hf_token=None, num_speakers=None,
+    )
+    kwargs.update(overrides)
+    return cli._resolve_common_options(cfg, **kwargs)
+
+
+class TestResolveCommonOptions:
+    def test_cli_overrides_and_config_fallbacks(self):
+        cfg = ScribeMdConfig(model="large-v3", paragraph_gap=2.0, overlap_seconds=5)
+        opts = _resolve_common(cfg, model="small")
+        assert opts.model == "small"          # CLI wins
+        assert opts.paragraph_gap == 2.0      # config fallback
+        assert opts.overlap_seconds == 5
+        assert opts.daily_note_folder == "Daily Notes"
+
+    def test_empty_config_language_is_auto(self):
+        opts = _resolve_common(ScribeMdConfig(language=""))
+        assert opts.language is None
+
+    def test_config_language_used(self):
+        opts = _resolve_common(ScribeMdConfig(language="ko"))
+        assert opts.language == "ko"
+
+    def test_frontmatter_defaults_off_without_vault(self):
+        opts = _resolve_common(ScribeMdConfig(vault=""))
+        assert opts.frontmatter is False
+
+    def test_frontmatter_defaults_on_with_vault(self):
+        opts = _resolve_common(ScribeMdConfig(vault="/vault"))
+        assert opts.vault == "/vault"
+        assert opts.frontmatter is True
+
+    def test_explicit_frontmatter_flag_wins(self):
+        opts = _resolve_common(ScribeMdConfig(vault="/vault"), frontmatter=False)
+        assert opts.frontmatter is False
+
+    def test_timestamp_reconciliation(self):
+        opts = _resolve_common(ScribeMdConfig(timestamps=True, timestamp_mode="segment"))
+        assert opts.ts is True and opts.ts_mode == "segment"
+
+    def test_no_timestamps_forces_none(self):
+        opts = _resolve_common(ScribeMdConfig(), timestamps=False)
+        assert opts.ts is False and opts.ts_mode == "none"
+
+    def test_daily_note_without_vault_exits(self):
+        with pytest.raises(typer.Exit):
+            _resolve_common(ScribeMdConfig(vault=""), daily_note=True)
+
+    def test_invalid_timestamp_mode_exits(self):
+        with pytest.raises(typer.Exit):
+            _resolve_common(ScribeMdConfig(), timestamp_mode="hourly")
+
+    def test_diarize_and_speaker_fields(self):
+        cfg = ScribeMdConfig(diarize=True, hf_token="tok", num_speakers=2)
+        opts = _resolve_common(cfg)
+        assert opts.diarize is True
+        assert opts.hf_token == "tok"
+        assert opts.num_speakers == 2

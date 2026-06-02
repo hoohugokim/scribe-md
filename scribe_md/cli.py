@@ -3,6 +3,7 @@
 import json
 import signal
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -154,6 +155,86 @@ def _resolve_timestamp_flags(
     if timestamp_mode == "none":
         return False, "none"
     return True, timestamp_mode
+
+
+@dataclass(frozen=True)
+class _Resolved:
+    """Settings shared by file/url/live after merging CLI flags with config.
+
+    ``chunk_seconds``/``incremental`` are resolved per-command (their config
+    source differs) and ``keep_audio`` is live-only, so they are not here.
+    ``ts``/``ts_mode`` are the timestamp flags already reconciled via
+    :func:`_resolve_timestamp_flags`.
+    """
+
+    model: str
+    language: str | None
+    paragraph_gap: float
+    overlap_seconds: float
+    vault: str
+    daily_note_folder: str
+    clean: bool
+    summary_model: str
+    diarize: bool
+    hf_token: str
+    num_speakers: int
+    frontmatter: bool
+    ts: bool
+    ts_mode: str
+
+
+def _resolve_common_options(
+    cfg: ScribeMdConfig,
+    *,
+    model,
+    language,
+    timestamps,
+    timestamp_mode,
+    paragraph_gap,
+    overlap_seconds,
+    vault,
+    daily_note,
+    frontmatter,
+    clean,
+    summary_model,
+    diarize_flag,
+    hf_token,
+    num_speakers,
+) -> _Resolved:
+    """Merge the CLI options common to file/url/live with *cfg*.
+
+    Also runs the shared validation (``--daily-note`` needs a vault, the
+    timestamp mode is recognised) and reconciles the timestamp flags, raising
+    ``typer.Exit`` on invalid input — exactly as the inline blocks did.
+    """
+    r_vault = _resolve(vault, cfg.vault)
+    r_timestamp_mode = _resolve(timestamp_mode, cfg.timestamp_mode)
+
+    # Frontmatter defaults to True when a vault is in play.
+    r_frontmatter = frontmatter if frontmatter is not None else bool(r_vault)
+
+    _validate_daily_note(daily_note, r_vault)
+    _validate_timestamp_mode(r_timestamp_mode)
+    ts, ts_mode = _resolve_timestamp_flags(
+        _resolve(timestamps, cfg.timestamps), r_timestamp_mode,
+    )
+
+    return _Resolved(
+        model=_resolve(model, cfg.model),
+        language=_resolve_language(language, cfg),
+        paragraph_gap=_resolve(paragraph_gap, cfg.paragraph_gap),
+        overlap_seconds=_resolve(overlap_seconds, cfg.overlap_seconds),
+        vault=r_vault,
+        daily_note_folder=cfg.daily_note_folder,
+        clean=_resolve(clean, cfg.clean),
+        summary_model=_resolve(summary_model, cfg.summary_model),
+        diarize=_resolve(diarize_flag, cfg.diarize),
+        hf_token=_resolve(hf_token, cfg.hf_token),
+        num_speakers=_resolve(num_speakers, cfg.num_speakers),
+        frontmatter=r_frontmatter,
+        ts=ts,
+        ts_mode=ts_mode,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -565,28 +646,16 @@ def file(
         raise typer.Exit(1)
 
     cfg = load_config()
-    r_model = _resolve(model, cfg.model)
-    r_language = _resolve_language(language, cfg)
-    r_timestamps = _resolve(timestamps, cfg.timestamps)
-    r_timestamp_mode = _resolve(timestamp_mode, cfg.timestamp_mode)
-    r_paragraph_gap = _resolve(paragraph_gap, cfg.paragraph_gap)
+    opts = _resolve_common_options(
+        cfg, model=model, language=language, timestamps=timestamps,
+        timestamp_mode=timestamp_mode, paragraph_gap=paragraph_gap,
+        overlap_seconds=overlap_seconds, vault=vault, daily_note=daily_note,
+        frontmatter=frontmatter, clean=clean, summary_model=summary_model,
+        diarize_flag=diarize_flag, hf_token=hf_token, num_speakers=num_speakers,
+    )
     r_chunk_seconds = _resolve(chunk_seconds, cfg.chunk_seconds)
-    r_overlap_seconds = _resolve(overlap_seconds, cfg.overlap_seconds)
     r_incremental = _resolve(incremental, cfg.incremental)
-    r_vault = _resolve(vault, cfg.vault)
-    r_daily_note_folder = cfg.daily_note_folder
-    r_clean = _resolve(clean, cfg.clean)
-    r_summary_model = _resolve(summary_model, cfg.summary_model)
-    r_diarize = _resolve(diarize_flag, cfg.diarize)
-    r_hf_token = _resolve(hf_token, cfg.hf_token)
-    r_num_speakers = _resolve(num_speakers, cfg.num_speakers)
 
-    # Frontmatter defaults to True when vault is set
-    r_frontmatter = frontmatter if frontmatter is not None else bool(r_vault)
-
-    _validate_daily_note(daily_note, r_vault)
-    _validate_timestamp_mode(r_timestamp_mode)
-    ts, ts_mode = _resolve_timestamp_flags(r_timestamps, r_timestamp_mode)
     if output:
         out = output
     else:
@@ -606,46 +675,46 @@ def file(
             file_duration = audio.get_duration(converted)
             metadata = _build_obsidian_metadata(
                 source=source, duration=file_duration,
-                language=r_language, model=r_model,
+                language=opts.language, model=opts.model,
             )
 
             def write_fn(text: str, output_path: Path) -> None:
                 _write_obsidian_output(
-                    text, output_path, r_vault, daily_note, r_frontmatter,
-                    metadata, r_daily_note_folder,
+                    text, output_path, opts.vault, daily_note, opts.frontmatter,
+                    metadata, opts.daily_note_folder,
                 )
 
             # Run diarization on the full audio if requested
             turns = None
-            if r_diarize:
+            if opts.diarize:
                 turns = _run_diarization(
-                    converted, hf_token=r_hf_token,
-                    num_speakers=r_num_speakers,
+                    converted, hf_token=opts.hf_token,
+                    num_speakers=opts.num_speakers,
                 )
 
             if _should_chunk(file_duration, r_chunk_seconds):
                 incremental_enabled, incremental_output = _resolve_incremental_output(
-                    out, vault=r_vault, daily_note=daily_note,
+                    out, vault=opts.vault, daily_note=daily_note,
                     incremental=r_incremental,
                 )
                 _transcribe_chunked(
-                    converted, out, r_model, r_language, ts,
-                    r_chunk_seconds, r_overlap_seconds,
-                    timestamp_mode=ts_mode, paragraph_gap=r_paragraph_gap,
+                    converted, out, opts.model, opts.language, opts.ts,
+                    r_chunk_seconds, opts.overlap_seconds,
+                    timestamp_mode=opts.ts_mode, paragraph_gap=opts.paragraph_gap,
                     incremental=incremental_enabled,
                     incremental_output=incremental_output,
                     write_fn=write_fn,
-                    clean=r_clean, summarize=summarize,
-                    summary_model=r_summary_model,
+                    clean=opts.clean, summarize=summarize,
+                    summary_model=opts.summary_model,
                     diarize_turns=turns,
                 )
             else:
                 _transcribe_single(
-                    converted, out, r_model, r_language, ts,
-                    timestamp_mode=ts_mode, paragraph_gap=r_paragraph_gap,
+                    converted, out, opts.model, opts.language, opts.ts,
+                    timestamp_mode=opts.ts_mode, paragraph_gap=opts.paragraph_gap,
                     write_fn=write_fn,
-                    clean=r_clean, summarize=summarize,
-                    summary_model=r_summary_model,
+                    clean=opts.clean, summarize=summarize,
+                    summary_model=opts.summary_model,
                     diarize_turns=turns,
                 )
     except (DiarizationError, ImportError) as e:
@@ -705,28 +774,15 @@ def url(
     """Transcribe audio from a YouTube URL to Markdown."""
     _guard_summarize_on_linux(summarize)
     cfg = load_config()
-    r_model = _resolve(model, cfg.model)
-    r_language = _resolve_language(language, cfg)
-    r_timestamps = _resolve(timestamps, cfg.timestamps)
-    r_timestamp_mode = _resolve(timestamp_mode, cfg.timestamp_mode)
-    r_paragraph_gap = _resolve(paragraph_gap, cfg.paragraph_gap)
+    opts = _resolve_common_options(
+        cfg, model=model, language=language, timestamps=timestamps,
+        timestamp_mode=timestamp_mode, paragraph_gap=paragraph_gap,
+        overlap_seconds=overlap_seconds, vault=vault, daily_note=daily_note,
+        frontmatter=frontmatter, clean=clean, summary_model=summary_model,
+        diarize_flag=diarize_flag, hf_token=hf_token, num_speakers=num_speakers,
+    )
     r_chunk_seconds = _resolve(chunk_seconds, cfg.chunk_seconds)
-    r_overlap_seconds = _resolve(overlap_seconds, cfg.overlap_seconds)
     r_incremental = _resolve(incremental, cfg.incremental)
-    r_vault = _resolve(vault, cfg.vault)
-    r_daily_note_folder = cfg.daily_note_folder
-    r_clean = _resolve(clean, cfg.clean)
-    r_summary_model = _resolve(summary_model, cfg.summary_model)
-    r_diarize = _resolve(diarize_flag, cfg.diarize)
-    r_hf_token = _resolve(hf_token, cfg.hf_token)
-    r_num_speakers = _resolve(num_speakers, cfg.num_speakers)
-
-    # Frontmatter defaults to True when vault is set
-    r_frontmatter = frontmatter if frontmatter is not None else bool(r_vault)
-
-    _validate_daily_note(daily_note, r_vault)
-    _validate_timestamp_mode(r_timestamp_mode)
-    ts, ts_mode = _resolve_timestamp_flags(r_timestamps, r_timestamp_mode)
 
     try:
         # One metadata fetch both decides playlist-vs-single (>1 entry means a
@@ -743,18 +799,18 @@ def url(
 
                 try:
                     _transcribe_url(
-                        entry_url, output=None, model=r_model, language=r_language,
-                        timestamps=ts, chunk_seconds=r_chunk_seconds,
-                        overlap_seconds=r_overlap_seconds,
-                        timestamp_mode=ts_mode, paragraph_gap=r_paragraph_gap,
+                        entry_url, output=None, model=opts.model, language=opts.language,
+                        timestamps=opts.ts, chunk_seconds=r_chunk_seconds,
+                        overlap_seconds=opts.overlap_seconds,
+                        timestamp_mode=opts.ts_mode, paragraph_gap=opts.paragraph_gap,
                         incremental=r_incremental,
-                        vault=r_vault, daily_note=daily_note,
-                        frontmatter=r_frontmatter,
-                        daily_note_folder=r_daily_note_folder,
-                        clean=r_clean, summarize=summarize,
-                        summary_model=r_summary_model,
-                        diarize_enabled=r_diarize, hf_token=r_hf_token,
-                        num_speakers=r_num_speakers,
+                        vault=opts.vault, daily_note=daily_note,
+                        frontmatter=opts.frontmatter,
+                        daily_note_folder=opts.daily_note_folder,
+                        clean=opts.clean, summarize=summarize,
+                        summary_model=opts.summary_model,
+                        diarize_enabled=opts.diarize, hf_token=opts.hf_token,
+                        num_speakers=opts.num_speakers,
                         output_directory=cfg.output_directory,
                         title=entry_title,
                     )
@@ -768,18 +824,18 @@ def url(
             # entries[0] (when present) carries the title for the single video.
             single_title = entries[0].get("title") if entries else None
             _transcribe_url(
-                video_url, output=output, model=r_model, language=r_language,
-                timestamps=ts, chunk_seconds=r_chunk_seconds,
-                overlap_seconds=r_overlap_seconds,
-                timestamp_mode=ts_mode, paragraph_gap=r_paragraph_gap,
+                video_url, output=output, model=opts.model, language=opts.language,
+                timestamps=opts.ts, chunk_seconds=r_chunk_seconds,
+                overlap_seconds=opts.overlap_seconds,
+                timestamp_mode=opts.ts_mode, paragraph_gap=opts.paragraph_gap,
                 incremental=r_incremental,
-                vault=r_vault, daily_note=daily_note,
-                frontmatter=r_frontmatter,
-                daily_note_folder=r_daily_note_folder,
-                clean=r_clean, summarize=summarize,
-                summary_model=r_summary_model,
-                diarize_enabled=r_diarize, hf_token=r_hf_token,
-                num_speakers=r_num_speakers,
+                vault=opts.vault, daily_note=daily_note,
+                frontmatter=opts.frontmatter,
+                daily_note_folder=opts.daily_note_folder,
+                clean=opts.clean, summarize=summarize,
+                summary_model=opts.summary_model,
+                diarize_enabled=opts.diarize, hf_token=opts.hf_token,
+                num_speakers=opts.num_speakers,
                 output_directory=cfg.output_directory,
                 title=single_title,
             )
@@ -938,35 +994,22 @@ def live(
         )
         raise typer.Exit(1)
     cfg = load_config()
-    r_model = _resolve(model, cfg.model)
-    r_language = _resolve_language(language, cfg)
-    r_timestamps = _resolve(timestamps, cfg.timestamps)
-    r_timestamp_mode = _resolve(timestamp_mode, cfg.timestamp_mode)
-    r_paragraph_gap = _resolve(paragraph_gap, cfg.paragraph_gap)
+    opts = _resolve_common_options(
+        cfg, model=model, language=language, timestamps=timestamps,
+        timestamp_mode=timestamp_mode, paragraph_gap=paragraph_gap,
+        overlap_seconds=overlap_seconds, vault=vault, daily_note=daily_note,
+        frontmatter=frontmatter, clean=clean, summary_model=summary_model,
+        diarize_flag=diarize_flag, hf_token=hf_token, num_speakers=num_speakers,
+    )
     r_chunk_seconds = _resolve(chunk_seconds, 0)  # live default: no chunking
-    r_overlap_seconds = _resolve(overlap_seconds, cfg.overlap_seconds)
-    r_keep_audio = _resolve(keep_audio, cfg.keep_audio)
     r_incremental = _resolve(incremental, cfg.live_incremental)
-    r_vault = _resolve(vault, cfg.vault)
-    r_daily_note_folder = cfg.daily_note_folder
-    r_clean = _resolve(clean, cfg.clean)
-    r_summary_model = _resolve(summary_model, cfg.summary_model)
-    r_diarize = _resolve(diarize_flag, cfg.diarize)
-    r_hf_token = _resolve(hf_token, cfg.hf_token)
-    r_num_speakers = _resolve(num_speakers, cfg.num_speakers)
+    r_keep_audio = _resolve(keep_audio, cfg.keep_audio)
     if output:
         r_output = output
     else:
         out_dir = Path(cfg.output_directory)
         out_dir.mkdir(parents=True, exist_ok=True)
         r_output = out_dir / "transcription.md"
-
-    # Frontmatter defaults to True when vault is set
-    r_frontmatter = frontmatter if frontmatter is not None else bool(r_vault)
-
-    _validate_daily_note(daily_note, r_vault)
-    _validate_timestamp_mode(r_timestamp_mode)
-    ts, ts_mode = _resolve_timestamp_flags(r_timestamps, r_timestamp_mode)
 
     # Build source and metadata for Obsidian
     apps = app_name if app_name else None
@@ -977,42 +1020,42 @@ def live(
 
     metadata = _build_obsidian_metadata(
         source=source, duration=None,
-        language=r_language, model=r_model,
+        language=opts.language, model=opts.model,
     )
 
     def write_fn(text: str, output_path: Path) -> None:
         _write_obsidian_output(
-            text, output_path, r_vault, daily_note, r_frontmatter,
-            metadata, r_daily_note_folder,
+            text, output_path, opts.vault, daily_note, opts.frontmatter,
+            metadata, opts.daily_note_folder,
         )
 
     try:
         if r_chunk_seconds > 0:
             incremental_enabled, incremental_output = _resolve_incremental_output(
-                r_output, vault=r_vault, daily_note=daily_note,
+                r_output, vault=opts.vault, daily_note=daily_note,
                 incremental=r_incremental,
             )
             _live_chunked(
-                r_output, duration, r_language, r_model, ts,
-                r_chunk_seconds, r_overlap_seconds, r_keep_audio, apps,
-                timestamp_mode=ts_mode, paragraph_gap=r_paragraph_gap,
+                r_output, duration, opts.language, opts.model, opts.ts,
+                r_chunk_seconds, opts.overlap_seconds, r_keep_audio, apps,
+                timestamp_mode=opts.ts_mode, paragraph_gap=opts.paragraph_gap,
                 incremental=incremental_enabled,
                 incremental_output=incremental_output,
                 write_fn=write_fn,
-                clean=r_clean, summarize=summarize,
-                summary_model=r_summary_model,
-                diarize_enabled=r_diarize, hf_token=r_hf_token,
-                num_speakers=r_num_speakers,
+                clean=opts.clean, summarize=summarize,
+                summary_model=opts.summary_model,
+                diarize_enabled=opts.diarize, hf_token=opts.hf_token,
+                num_speakers=opts.num_speakers,
             )
         else:
             _live_single(
-                r_output, duration, r_language, r_model, ts, r_keep_audio, apps,
-                timestamp_mode=ts_mode, paragraph_gap=r_paragraph_gap,
+                r_output, duration, opts.language, opts.model, opts.ts, r_keep_audio, apps,
+                timestamp_mode=opts.ts_mode, paragraph_gap=opts.paragraph_gap,
                 write_fn=write_fn,
-                clean=r_clean, summarize=summarize,
-                summary_model=r_summary_model,
-                diarize_enabled=r_diarize, hf_token=r_hf_token,
-                num_speakers=r_num_speakers,
+                clean=opts.clean, summarize=summarize,
+                summary_model=opts.summary_model,
+                diarize_enabled=opts.diarize, hf_token=opts.hf_token,
+                num_speakers=opts.num_speakers,
             )
     except (DiarizationError, ImportError) as e:
         console.print(f"[red]Error:[/red] {e}")
