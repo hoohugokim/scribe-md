@@ -1,27 +1,34 @@
 # scribe-md — Development Plan
 
-## Current State (v0.2 — CLI App)
+## Current State (v0.2.0 — cross-platform CLI)
 
 ### What exists
-- **Swift CLI** (`capture/`): System-wide audio capture via ScreenCaptureKit → 48kHz stereo WAV, with chunked output, overlap buffer, proper per-channel buffer handling, and reliable signal handling
-- **Python CLI** (`scribe_md/`): Typer-based CLI with three subcommands (`live`, `url`, `file`), mlx-whisper transcription, yt-dlp YouTube download, overlap-aware chunk merge, silence detection
-- **Pixi** for all dependencies: Python, mlx-whisper, ffmpeg, yt-dlp — portable to any Apple Silicon Mac via `git clone` + `pixi install`
+- **Swift CLI** (`capture/`): System-wide audio capture via ScreenCaptureKit → 48kHz stereo WAV, with chunked output, overlap buffer, proper per-channel buffer handling, and reliable signal handling (macOS only)
+- **Python CLI** (`scribe_md/`): Typer-based CLI with three subcommands (`live`, `url`, `file`), platform-selected transcription backend, yt-dlp YouTube download, overlap-aware chunk merge, silence detection
+- **Transcription backends**: mlx-whisper on macOS (Apple Silicon), whisper.cpp on Linux (Vulkan/CUDA/CPU); selected automatically by platform, overridable via `SCRIBE_MD_BACKEND`
+- **Pixi** for all dependencies — portable to Apple Silicon Macs and Linux via `git clone` + `pixi install` (see `docs/LINUX.md` for the Linux build)
 
 ### Architecture
 ```
 scribe-md/
-  capture/                    # Swift CLI (ScreenCaptureKit)
+  capture/                    # Swift CLI (ScreenCaptureKit, macOS)
     Package.swift
     Sources/main.swift
+  vendor/whisper.cpp          # git submodule (Linux backend)
   scribe_md/                  # Python package (typer CLI)
     __init__.py
-    cli.py                    # Subcommands: live, url, file
-    transcriber.py            # mlx-whisper transcription
-    merger.py                 # Chunk merge logic
+    cli.py                    # Subcommands: live, url, file, config, list-*
+    platform_support.py       # OS detection + platform-aware hints
+    transcriber.py            # Transcription facade (validates, delegates)
+    backends/                 # base protocol + mlx (macOS) + whispercpp (Linux)
+    merger.py                 # Overlap-aware chunk merge + timestamp rendering
+    postprocess.py            # Rule-based cleaning + optional mlx-lm summary
+    diarize.py                # Optional speaker diarization (pyannote)
+    obsidian.py               # Frontmatter / daily-note / vault output
     audio.py                  # ffmpeg helpers, silence detection
     downloader.py             # yt-dlp wrapper
-    capture.py                # Swift binary management
-    config.py                 # TOML config loading
+    capture.py                # Swift binary management (macOS)
+    config.py                 # Layered TOML config loading
     utils.py                  # Shared utilities
   pyproject.toml              # Python package definition
   pixi.toml                   # Dependency management
@@ -140,10 +147,14 @@ scribe-md/
 - `resolve_model()` maps short names to full HF repo paths
 - Default: `large-v3` (mlx-community/whisper-large-v3-mlx)
 
-### ~~6.2 Parallel chunk transcription~~ DONE
-- ~~Current chunked pipeline is sequential (transcribe chunk N while recording chunk N+1)~~
-- ~~For offline mode (yt-dlp / existing file): parallelize transcription across chunks~~
-- ~~Limit concurrency to avoid ANE contention (2-3 parallel workers max)~~
+### 6.2 Parallel chunk transcription — NOT PURSUED (sequential by design)
+- Investigated, then deliberately dropped: mlx-whisper saturates the GPU with a
+  single inference and parallel Metal command buffers crash on Apple Silicon, so
+  chunks are transcribed **sequentially**. There is no `--workers`/`--no-parallel`
+  flag.
+- The whisper.cpp (Linux) backend runs as a subprocess and could in principle
+  parallelize, but currently inherits the same sequential path. (See the
+  performance notes — a potential future improvement.)
 
 ### ~~6.3 Incremental output~~ DONE
 - ~~In chunked mode, append to `.md` file as each chunk is transcribed~~
@@ -173,7 +184,7 @@ scribe-md/
 | ~~P2~~ | ~~6.3 Incremental output~~ | ~~Small~~ | DONE |
 | ~~P3~~ | ~~4.1 Speaker diarization~~ | ~~Large~~ | DONE |
 | ~~P3~~ | ~~4.4 LLM post-processing~~ | ~~Medium~~ | DONE |
-| ~~P3~~ | ~~6.2 Parallel transcription~~ | ~~Medium~~ | DONE |
+| P3 | 6.2 Parallel transcription | Medium | NOT PURSUED (sequential by design) |
 
 ---
 
@@ -181,17 +192,19 @@ scribe-md/
 
 | Component | Status |
 |-----------|--------|
-| Audio capture | Swift + ScreenCaptureKit (system-wide) |
+| Audio capture | Swift + ScreenCaptureKit (system-wide, macOS) |
 | Audio download | yt-dlp (via Pixi conda-forge) |
 | Audio conversion | ffmpeg (via Pixi conda-forge) |
-| Transcription | mlx-whisper large-v3 (Apple Silicon) |
+| Transcription | mlx-whisper (macOS) / whisper.cpp (Linux), `large-v3` default |
 | Orchestrator | Python CLI (typer) |
 | Dependencies | Pixi (conda-forge + PyPI) |
 | Output | Markdown with optional timestamps |
 
 ---
 
-## Setup (Any Apple Silicon Mac)
+## Setup
+
+### macOS (Apple Silicon)
 
 ```bash
 # Prerequisites
@@ -206,4 +219,17 @@ pixi install
 pixi run scribe-md url "https://youtube.com/watch?v=..."
 pixi run scribe-md live -l ko -o meeting.md
 pixi run scribe-md file recording.wav -o output.md
+```
+
+### Linux
+
+`live` (system-audio capture) is macOS-only; use `file`/`url`. Transcription
+runs on whisper.cpp, built on first use with auto-detected GPU acceleration.
+See `docs/LINUX.md` for details.
+
+```bash
+git clone <repo-url> && cd scribe-md
+pixi install
+pixi run build-whisper          # one-time: build whisper.cpp (Vulkan/CUDA/CPU)
+pixi run scribe-md url "https://youtube.com/watch?v=..."
 ```

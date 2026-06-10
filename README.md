@@ -10,6 +10,9 @@ Uses [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)
 - [Pixi](https://pixi.sh) package manager
 - Xcode Command Line Tools (for live capture only)
 
+> **Linux (Pop!_OS / Ubuntu 24.04):** `file` and `url` commands are supported
+> via whisper.cpp with Vulkan/CUDA GPU acceleration. See [docs/LINUX.md](docs/LINUX.md).
+
 ## Installation
 
 ```bash
@@ -238,22 +241,19 @@ scribe-md file interview.wav --diarize --num-speakers 2
 
 Diarization runs on CPU (Apple Silicon MPS is not yet supported by pyannote). Expect roughly real-time processing speed (30 min audio takes ~15-30 min).
 
-## Parallel Transcription
+## Chunked Transcription
 
-For long files and YouTube videos, chunked transcription runs in parallel by default:
+For long files and YouTube videos, scribe-md splits audio into chunks and
+transcribes them sequentially. This avoids GPU/ANE instability in the macOS
+backend while still keeping memory use bounded for long recordings.
 
 ```bash
-# Default: 2 parallel workers
+# Long files are chunked automatically when they exceed chunk_seconds
 scribe-md file long-lecture.wav
 
-# Use more workers (max 4)
-scribe-md file long-lecture.wav --workers 4
-
-# Disable parallelism
-scribe-md file long-lecture.wav --no-parallel
+# Override the chunk size
+scribe-md file long-lecture.wav --chunk-seconds 1200
 ```
-
-Parallel transcription uses threads (not processes) because mlx-whisper shares GPU/ANE state within a single process.
 
 ## Incremental Output
 
@@ -289,13 +289,11 @@ paragraph_gap = 2.0
 chunk_seconds = 1800
 overlap_seconds = 5
 incremental = false
-parallel = true
-workers = 2
 clean = false
 summary_model = ""
 
 [output]
-directory = "."
+directory = "output"
 
 [obsidian]
 vault = ""

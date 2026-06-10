@@ -120,6 +120,30 @@ def list_apps() -> list[dict]:
     return apps
 
 
+def terminate_capture(proc: subprocess.Popen) -> None:
+    """Stop and reap a capture subprocess; safe if it already exited.
+
+    The live pipelines launch the Swift recorder concurrently with Python.
+    If the pipeline fails mid-run (e.g. DiskFullError) the recorder must be
+    reaped before the temp directory it writes into is cleaned up — otherwise
+    it keeps running orphaned and races the cleanup. Called from a ``finally``.
+    """
+    try:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+    finally:
+        if proc.stdout is not None:
+            try:
+                proc.stdout.close()
+            except OSError:
+                pass
+
+
 def run_capture(
     output_path: Path,
     duration: float | None = None,

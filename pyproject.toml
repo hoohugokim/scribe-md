@@ -1,13 +1,13 @@
 [project]
 name = "scribe-md"
-version = "0.1.1"
+version = "0.2.0"
 description = "Transcribe system audio and YouTube videos to Markdown"
 requires-python = ">=3.12"
 dependencies = [
     "typer>=0.9",
-    "mlx-whisper",
     "yt-dlp",
     "rich",
+    "mlx-whisper; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]

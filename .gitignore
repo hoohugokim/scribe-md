@@ -16,10 +16,14 @@ capture/.build/
 !PLAN.md
 !README.md
 !CHANGELOG.md
+!docs/**/*.md
 output/
 
 # Session handoff files
 SESSION-HANDOFF_*.md
+
+# Local scratch / review artifacts (not tracked)
+_local/
 
 # Python package artifacts
 *.egg-info/
