@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Synced `scribe_md.__version__` (was stale at `0.1.1`) with the packaged
   version (`0.2.1`).
+- Chunked transcription no longer writes an empty Markdown file and exits 0
+  when every chunk fails (e.g. a broken whisper.cpp binary): a total failure
+  now raises and exits non-zero, a partial failure logs a warning, and a
+  chunk that crashed is no longer mislabeled "silent or no speech".
 
 ### Removed
 - Unused `downloader.is_playlist()` helper; playlist detection is handled by

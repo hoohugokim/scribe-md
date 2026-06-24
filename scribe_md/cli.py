@@ -584,8 +584,17 @@ def _transcribe_chunks_sequential(
     *,
     incremental: bool = False,
 ) -> list[list[dict]]:
-    """Transcribe chunks one at a time (original sequential pipeline)."""
+    """Transcribe chunks one at a time (original sequential pipeline).
+
+    A chunk that *raises* (e.g. a backend crash) is logged as a failure and
+    kept empty so the rest of the file still proceeds. But if **every** chunk
+    fails, the transcript would be empty for a reason that is not silence — so
+    we raise ``TranscriptionError`` to surface a real error (non-zero exit)
+    instead of silently writing a blank file.
+    """
     all_segments: list[list[dict]] = []
+    failures = 0
+    last_error: Exception | None = None
     for i, chunk_path in enumerate(chunks):
         console.print(f"  Transcribing chunk {i + 1}/{len(chunks)}...")
         try:
@@ -593,12 +602,26 @@ def _transcribe_chunks_sequential(
         except Exception as e:
             log(f"  Chunk {i} failed: {e}")
             segments = []
-        if not segments:
-            log(f"  Chunk {i}: silent or no speech, skipping")
+            failures += 1
+            last_error = e
+        else:
+            if not segments:
+                log(f"  Chunk {i}: silent or no speech, skipping")
         all_segments.append(segments)
 
         if incremental:
             _append_incremental(output, segments)
+
+    if chunks and failures == len(chunks):
+        raise TranscriptionError(
+            f"All {len(chunks)} chunk(s) failed to transcribe — refusing to "
+            f"write an empty transcript. Last error: {last_error}"
+        )
+    if failures:
+        log(
+            f"  Warning: {failures}/{len(chunks)} chunk(s) failed; "
+            "the transcript is incomplete."
+        )
 
     return all_segments
 

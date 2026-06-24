@@ -8,8 +8,10 @@ from scribe_md.cli import (
     _apply_postprocessing,
     _resolve_incremental_output,
     _should_chunk,
+    _transcribe_chunks_sequential,
 )
 from scribe_md.config import ScribeMdConfig
+from scribe_md.transcriber import TranscriptionError
 
 runner = CliRunner()
 
@@ -100,3 +102,48 @@ def test_daily_note_requires_vault(monkeypatch, tmp_path):
 
     assert result.exit_code == 1
     assert "--daily-note requires --vault" in result.output
+
+
+def test_all_chunks_failed_raises_instead_of_writing_empty(monkeypatch, tmp_path):
+    # A broken backend makes every chunk raise. That is NOT silence: the
+    # pipeline must raise so the command exits non-zero instead of writing an
+    # empty transcript (the whisper.cpp "undefined symbol" / exit 127 case).
+    def boom(chunk_path, model, language):
+        raise TranscriptionError("whisper.cpp failed (exit 127): undefined symbol")
+
+    monkeypatch.setattr("scribe_md.cli._transcribe_chunk", boom)
+    chunks = [tmp_path / "chunk_000.wav", tmp_path / "chunk_001.wav"]
+
+    with pytest.raises(TranscriptionError):
+        _transcribe_chunks_sequential(chunks, "large-v3", "ko", tmp_path / "out.md")
+
+
+def test_partial_chunk_failure_does_not_raise(monkeypatch, tmp_path):
+    # One bad chunk among good ones still yields a (partial) transcript.
+    def one_bad(chunk_path, model, language):
+        if chunk_path.name == "chunk_000.wav":
+            raise TranscriptionError("transient failure")
+        return [{"start": 0.0, "end": 1.0, "text": "hello"}]
+
+    monkeypatch.setattr("scribe_md.cli._transcribe_chunk", one_bad)
+    chunks = [tmp_path / "chunk_000.wav", tmp_path / "chunk_001.wav"]
+
+    segments = _transcribe_chunks_sequential(
+        chunks, "large-v3", "ko", tmp_path / "out.md"
+    )
+
+    assert segments[0] == []
+    assert segments[1] == [{"start": 0.0, "end": 1.0, "text": "hello"}]
+
+
+def test_all_chunks_silent_does_not_raise(monkeypatch, tmp_path):
+    # Genuine silence (empty result, no exception) is allowed and must not be
+    # mistaken for a failure.
+    monkeypatch.setattr("scribe_md.cli._transcribe_chunk", lambda *a, **k: [])
+    chunks = [tmp_path / "chunk_000.wav", tmp_path / "chunk_001.wav"]
+
+    segments = _transcribe_chunks_sequential(
+        chunks, "large-v3", "ko", tmp_path / "out.md"
+    )
+
+    assert segments == [[], []]
