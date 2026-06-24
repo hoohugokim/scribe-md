@@ -255,6 +255,35 @@ scribe-md file long-lecture.wav
 scribe-md file long-lecture.wav --chunk-seconds 1200
 ```
 
+## Multi-GPU / Batch Transcription
+
+Pass multiple inputs in one command; each produces its own `.md`:
+
+```bash
+scribe-md file Lecture{5..15}.mp4 -l ko --clean        # many files
+scribe-md url URL1 URL2 URL3 -l ko                     # many URLs
+scribe-md url --from-file urls.txt -l ko               # a list file
+```
+
+On a multi-GPU NVIDIA machine, `--gpus` transcribes chunks from all inputs
+concurrently across devices:
+
+```bash
+scribe-md file Lecture{5..15}.mp4 --gpus auto -l ko    # all CUDA GPUs
+scribe-md url --from-file urls.txt --gpus 0,1 -l ko    # specific devices
+```
+
+`--gpus`: `auto` (all CUDA devices), an integer `N` (first N), or a list
+(`0,1`). Settable as `[gpu] gpus` in config. Pin `SCRIBE_MD_WHISPER_ACCEL=cuda`
+and use the `cuda` pixi env so the CUDA backend is selected (see
+[docs/LINUX.md](docs/LINUX.md)).
+
+> **Scope:** multi-GPU parallelism is **CUDA-only** today. On Apple Silicon
+> (single unified-memory device) and the Linux **Vulkan** backend, multi-input
+> still works but runs sequentially. Vulkan/MLX multi-GPU is possible future
+> work — open an issue if you need it. `--incremental` is disabled under
+> multi-GPU (chunks finish out of order).
+
 ## Incremental Output
 
 In chunked mode, see results as they're transcribed:

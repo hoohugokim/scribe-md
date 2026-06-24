@@ -44,6 +44,26 @@ SCRIBE_MD_WHISPER_ACCEL=cpu pixi run build-whisper
 time SCRIBE_MD_WHISPER_ACCEL=cpu pixi run scribe-md file sample.wav -m small
 ```
 
+## Multi-GPU parallel transcription
+
+On a multi-GPU NVIDIA machine, use `--gpus auto` (or `--gpus 0,1`) together
+with the `cuda` pixi environment to transcribe many files or URLs concurrently
+across all available devices:
+
+```bash
+# Activate the CUDA env and build with CUDA support first:
+pixi install -e cuda
+SCRIBE_MD_WHISPER_ACCEL=cuda pixi run -e cuda build-whisper
+
+# Then transcribe in parallel:
+env SCRIBE_MD_WHISPER_ACCEL=cuda pixi run -e cuda \
+  scribe-md file Lecture{5..15}.mp4 --gpus auto -l ko --clean
+```
+
+`SCRIBE_MD_WHISPER_ACCEL=cuda` forces the CUDA backend so `--gpus` engages.
+See [README.md — Multi-GPU / Batch Transcription](../README.md#multi-gpu--batch-transcription)
+for the full `--gpus` grammar and scope notes (Vulkan runs sequentially).
+
 ## Known limitations on Linux
 
 - `scribe-md live` -> "Live system-audio capture is macOS-only for now."
