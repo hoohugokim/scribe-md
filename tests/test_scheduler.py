@@ -95,3 +95,105 @@ def test_parallel_all_sources_failed_sets_all_failed(monkeypatch):
     )
     assert summary.succeeded == []
     assert summary.all_failed
+
+
+def test_parallel_prepare_failure_skips_source_and_releases_inflight(monkeypatch):
+    """prepare() raising must skip the source and release the inflight semaphore."""
+    monkeypatch.setattr(scheduler, "transcribe_chunk", lambda *a, **k: [])
+
+    call_count = 0
+
+    def bad_prepare(source):
+        nonlocal call_count
+        call_count += 1
+        raise ValueError("bad source")
+
+    summary = scheduler.transcribe_in_parallel(
+        ["X", "Y"], gpu_ids=[0], model="tiny", language=None,
+        prepare=bad_prepare, finalize=lambda p, o: None, max_inflight=2,
+    )
+    assert call_count == 2
+    assert len(summary.skipped) == 2
+    assert all("prepare failed" in reason for _, reason in summary.skipped)
+    assert summary.all_failed
+
+
+def test_parallel_no_audio_chunks_skips_source_and_calls_cleanup(monkeypatch):
+    """An empty chunk_paths list must skip the source, call cleanup, and release inflight."""
+    monkeypatch.setattr(scheduler, "transcribe_chunk", lambda *a, **k: [])
+
+    cleanup_called = []
+
+    def prepare_empty(source):
+        def cleanup():
+            cleanup_called.append(source)
+        return PreparedSource(
+            key=str(source),
+            chunk_paths=[],
+            cleanup=cleanup,
+        )
+
+    summary = scheduler.transcribe_in_parallel(
+        ["empty"], gpu_ids=[0], model="tiny", language=None,
+        prepare=prepare_empty, finalize=lambda p, o: None, max_inflight=2,
+    )
+    assert cleanup_called == ["empty"], "cleanup must be called for no-chunks sources"
+    assert summary.skipped == [("empty", "no audio chunks")]
+    assert summary.all_failed
+
+
+def test_parallel_cleanup_called_on_fully_failed_source(monkeypatch):
+    """cleanup() must be called even when all chunks fail."""
+    def boom(path, model, language, device=None):
+        raise RuntimeError("chunk error")
+
+    monkeypatch.setattr(scheduler, "transcribe_chunk", boom)
+
+    cleanup_called = []
+
+    def prepare_with_cleanup(source):
+        def cleanup():
+            cleanup_called.append(source)
+        return PreparedSource(
+            key=str(source),
+            chunk_paths=[Path(f"{source}-0.wav")],
+            cleanup=cleanup,
+        )
+
+    summary = scheduler.transcribe_in_parallel(
+        ["Z"], gpu_ids=[0], model="tiny", language=None,
+        prepare=prepare_with_cleanup, finalize=lambda p, o: None, max_inflight=2,
+    )
+    assert cleanup_called == ["Z"], "cleanup must be called even when all chunks fail"
+    assert summary.skipped
+    assert summary.all_failed
+
+
+def test_parallel_finalize_raises_does_not_deadlock(monkeypatch):
+    """If finalize() raises, the finalizer thread must not crash (deadlock prevention)."""
+    monkeypatch.setattr(scheduler, "transcribe_chunk",
+                        lambda path, model, language, device=None: [])
+
+    cleanup_called = []
+
+    def prepare_with_cleanup(source):
+        def cleanup():
+            cleanup_called.append(source)
+        return PreparedSource(
+            key=str(source),
+            chunk_paths=[Path(f"{source}-0.wav")],
+            cleanup=cleanup,
+        )
+
+    def bad_finalize(prepared, ordered):
+        raise RuntimeError("finalize boom")
+
+    summary = scheduler.transcribe_in_parallel(
+        ["F1", "F2"], gpu_ids=[0], model="tiny", language=None,
+        prepare=prepare_with_cleanup, finalize=bad_finalize, max_inflight=2,
+    )
+    # Both sources should be skipped (finalize failed), not hung
+    assert len(summary.skipped) == 2
+    assert all("finalize failed" in reason for _, reason in summary.skipped)
+    # cleanup must still have been called for both
+    assert sorted(cleanup_called) == ["F1", "F2"]

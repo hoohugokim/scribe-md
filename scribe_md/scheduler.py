@@ -94,20 +94,24 @@ def transcribe_in_parallel(
                 return
             n = len(job.prepared.chunk_paths)
             try:
-                if n and job.failures == n:
-                    summary.skipped.append(
-                        (job.prepared.key, f"all {n} chunk(s) failed: {job.last_error}")
-                    )
-                    log(f"[skip] {job.prepared.key}: all chunks failed ({job.last_error})")
-                else:
-                    ordered = [job.results[i] for i in range(n)]
-                    finalize(job.prepared, ordered)
-                    summary.succeeded.append(job.prepared.key)
-                    if job.failures:
-                        log(
-                            f"  [{job.prepared.key}] warning: {job.failures}/{n} "
-                            "chunk(s) failed; transcript incomplete"
+                try:
+                    if n and job.failures == n:
+                        summary.skipped.append(
+                            (job.prepared.key, f"all {n} chunk(s) failed: {job.last_error}")
                         )
+                        log(f"[skip] {job.prepared.key}: all chunks failed ({job.last_error})")
+                    else:
+                        ordered = [job.results[i] for i in range(n)]
+                        finalize(job.prepared, ordered)
+                        summary.succeeded.append(job.prepared.key)
+                        if job.failures:
+                            log(
+                                f"  [{job.prepared.key}] warning: {job.failures}/{n} "
+                                "chunk(s) failed; transcript incomplete"
+                            )
+                except Exception as e:  # noqa: BLE001 — finalize failure skips one source
+                    log(f"[skip] {job.prepared.key}: finalize failed: {e}")
+                    summary.skipped.append((job.prepared.key, f"finalize failed: {e}"))
             finally:
                 job.prepared.cleanup()
                 inflight.release()
