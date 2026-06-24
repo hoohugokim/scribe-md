@@ -20,13 +20,15 @@ def test_collect_merges_positional_and_file(tmp_path):
 
 
 def test_collect_empty_raises_exit():
-    with pytest.raises(typer.Exit):
+    with pytest.raises(typer.Exit) as exc_info:
         _collect_inputs([], None)
+    assert exc_info.value.exit_code == 1
 
 
 def test_output_with_multiple_inputs_raises():
     from pathlib import Path
-    with pytest.raises(typer.Exit):
+    with pytest.raises(typer.Exit) as exc_info:
         _validate_single_output(["a", "b"], Path("out.md"))
+    assert exc_info.value.exit_code == 1
     # single input + -o is fine
     _validate_single_output(["a"], Path("out.md"))
