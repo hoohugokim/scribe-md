@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Chunked transcription no longer writes an empty Markdown file and exits 0
+  when every chunk fails (e.g. a broken whisper.cpp binary): a total failure
+  now raises and exits non-zero, a partial failure logs a warning, and a
+  chunk that crashed is no longer mislabeled "silent or no speech".
+
 ## [0.2.0] - 2026-06-02
 
 ### Added
