@@ -18,8 +18,11 @@ class MLXBackend:
     def describe(self) -> str:
         return "MLX (Apple Silicon)"
 
-    def transcribe(self, audio_path: Path, *, model: str, language: str | None) -> dict:
-        # Deferred import: mlx_whisper is macOS-only and unavailable on Linux.
+    def transcribe(
+        self, audio_path: Path, *, model: str, language: str | None,
+        device: str | None = None,
+    ) -> dict:
+        # device is ignored: Apple Silicon is a single unified-memory device.
         import mlx_whisper
 
         kwargs = {"path_or_hf_repo": self.resolve_model(model)}
