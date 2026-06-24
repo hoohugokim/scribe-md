@@ -63,6 +63,12 @@ _SummaryModel = Annotated[Optional[str], typer.Option("--summary-model", help="O
 _Diarize = Annotated[Optional[bool], typer.Option("--diarize/--no-diarize", help="Enable speaker diarization (requires pyannote-audio)")]
 _HfToken = Annotated[Optional[str], typer.Option("--hf-token", help="HuggingFace token for diarization model")]
 _NumSpeakers = Annotated[Optional[int], typer.Option("--num-speakers", help="Number of speakers (0 = auto-detect)")]
+_FromFile = Annotated[Optional[Path], typer.Option(
+    "--from-file", help="Read inputs (one per line; '#' comments allowed) from a file",
+)]
+_Gpus = Annotated[Optional[str], typer.Option(
+    "--gpus", help="GPUs for parallel transcription: 'auto', N, or '0,1' (CUDA only)",
+)]
 
 # ---------------------------------------------------------------------------
 # Config subcommand group
@@ -311,6 +317,30 @@ def _validate_daily_note(daily_note: bool, vault: str) -> None:
         console.print(
             "[red]Error:[/red] --daily-note requires --vault or obsidian.vault "
             "in the config."
+        )
+        raise typer.Exit(1)
+
+
+def _collect_inputs(positional: list[str], from_file: Path | None) -> list[str]:
+    """Merge positional inputs with a --from-file list; fail fast if empty."""
+    inputs = list(positional or [])
+    if from_file is not None:
+        for line in from_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                inputs.append(line)
+    if not inputs:
+        console.print("[red]Error:[/red] no inputs given (positional or --from-file).")
+        raise typer.Exit(1)
+    return inputs
+
+
+def _validate_single_output(inputs: list, output: Path | None) -> None:
+    """`-o/--output` names one file, so reject it with multiple inputs."""
+    if output is not None and len(inputs) > 1:
+        console.print(
+            "[red]Error:[/red] --output/-o works with a single input only; "
+            "with multiple inputs, outputs are written to the output directory."
         )
         raise typer.Exit(1)
 
