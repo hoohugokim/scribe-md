@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-24
+
+### Fixed
+- Synced `scribe_md.__version__` (was stale at `0.1.1`) with the packaged
+  version (`0.2.1`).
+
+### Removed
+- Unused `downloader.is_playlist()` helper; playlist detection is handled by
+  `get_playlist_entries`.
+
 ## [0.2.0] - 2026-06-02
 
 ### Added
@@ -104,7 +114,8 @@ Initial release.
   → project-local `.scribe-md.toml` → CLI flags.
 - Configurable output directory.
 
-[Unreleased]: https://github.com/hoohugokim/scribe-md/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/hoohugokim/scribe-md/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/hoohugokim/scribe-md/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/hoohugokim/scribe-md/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/hoohugokim/scribe-md/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/hoohugokim/scribe-md/releases/tag/v0.1.0

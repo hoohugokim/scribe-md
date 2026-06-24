@@ -44,16 +44,6 @@ def get_video_info(url: str) -> dict:
     return _loads_json(result.stdout, "reading video metadata")
 
 
-def is_playlist(url: str) -> bool:
-    """Check if URL is a playlist (has multiple entries)."""
-    result = _run_ytdlp(
-        ["yt-dlp", "--flat-playlist", "--dump-json", url],
-        "checking playlist entries",
-    )
-    lines = [l for l in result.stdout.strip().split("\n") if l]
-    return len(lines) > 1
-
-
 def get_playlist_entries(url: str) -> list[dict]:
     """Get metadata for all videos in a playlist."""
     result = _run_ytdlp(
