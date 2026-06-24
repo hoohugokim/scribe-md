@@ -410,9 +410,6 @@ def test_ensure_model_rejects_path_traversal(monkeypatch, tmp_path):
 # Task 2: device pinning via CUDA_VISIBLE_DEVICES
 # ---------------------------------------------------------------------------
 
-from pathlib import Path
-from scribe_md.backends import whispercpp
-
 
 def test_transcribe_pins_cuda_visible_devices(monkeypatch, tmp_path):
     captured = {}
@@ -428,13 +425,13 @@ def test_transcribe_pins_cuda_visible_devices(monkeypatch, tmp_path):
         out_prefix.with_suffix(".json").write_text('{"transcription": []}')
         return R()
 
-    monkeypatch.setattr(whispercpp, "ensure_whisper_binary", lambda: Path("/bin/whisper-cli"))
-    monkeypatch.setattr(whispercpp, "_ensure_model_file", lambda m: Path("/m/ggml-tiny.bin"))
-    monkeypatch.setattr(whispercpp.subprocess, "run", fake_run)
+    monkeypatch.setattr(w, "ensure_whisper_binary", lambda: Path("/bin/whisper-cli"))
+    monkeypatch.setattr(w, "_ensure_model_file", lambda m: Path("/m/ggml-tiny.bin"))
+    monkeypatch.setattr(w.subprocess, "run", fake_run)
 
     wav = tmp_path / "a.wav"
     wav.write_bytes(b"\x00" * 100)
-    whispercpp.WhisperCppBackend().transcribe(wav, model="tiny", language="ko", device="1")
+    w.WhisperCppBackend().transcribe(wav, model="tiny", language="ko", device="1")
 
     assert captured["env"]["CUDA_VISIBLE_DEVICES"] == "1"
 
@@ -452,12 +449,12 @@ def test_transcribe_without_device_leaves_env_default(monkeypatch, tmp_path):
         out_prefix.with_suffix(".json").write_text('{"transcription": []}')
         return R()
 
-    monkeypatch.setattr(whispercpp, "ensure_whisper_binary", lambda: Path("/bin/whisper-cli"))
-    monkeypatch.setattr(whispercpp, "_ensure_model_file", lambda m: Path("/m/ggml-tiny.bin"))
-    monkeypatch.setattr(whispercpp.subprocess, "run", fake_run)
+    monkeypatch.setattr(w, "ensure_whisper_binary", lambda: Path("/bin/whisper-cli"))
+    monkeypatch.setattr(w, "_ensure_model_file", lambda m: Path("/m/ggml-tiny.bin"))
+    monkeypatch.setattr(w.subprocess, "run", fake_run)
 
     wav = tmp_path / "a.wav"
     wav.write_bytes(b"\x00" * 100)
-    whispercpp.WhisperCppBackend().transcribe(wav, model="tiny", language="ko")
+    w.WhisperCppBackend().transcribe(wav, model="tiny", language="ko")
 
     assert captured["env"] is None

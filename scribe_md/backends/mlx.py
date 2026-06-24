@@ -23,6 +23,7 @@ class MLXBackend:
         device: str | None = None,
     ) -> dict:
         # device is ignored: Apple Silicon is a single unified-memory device.
+        # Deferred import: mlx_whisper is macOS-only and unavailable on Linux.
         import mlx_whisper
 
         kwargs = {"path_or_hf_repo": self.resolve_model(model)}
