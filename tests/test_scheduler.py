@@ -197,3 +197,32 @@ def test_parallel_finalize_raises_does_not_deadlock(monkeypatch):
     assert all("finalize failed" in reason for _, reason in summary.skipped)
     # cleanup must still have been called for both
     assert sorted(cleanup_called) == ["F1", "F2"]
+
+
+def test_parallel_chunk_baseexception_does_not_deadlock(monkeypatch):
+    """If transcribe_chunk raises a BaseException (e.g. KeyboardInterrupt),
+    the scheduler must not deadlock — the job must still complete and the
+    source must be marked skipped rather than hanging forever."""
+    monkeypatch.setattr(scheduler, "transcribe_chunk",
+                        lambda *a, **kw: (_ for _ in ()).throw(KeyboardInterrupt()))
+
+    result_holder = {}
+
+    def run():
+        summary = scheduler.transcribe_in_parallel(
+            ["A"], gpu_ids=[0], model="t", language=None,
+            prepare=_prep(1),
+            finalize=lambda p, o: None,
+            max_inflight=1,
+        )
+        result_holder["summary"] = summary
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(timeout=10)
+    assert not t.is_alive(), "transcribe_in_parallel deadlocked on BaseException"
+    # The source must have been skipped (chunk raised), not succeeded
+    summary = result_holder.get("summary")
+    assert summary is not None
+    assert summary.succeeded == []
+    assert len(summary.skipped) == 1

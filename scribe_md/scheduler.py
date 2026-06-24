@@ -121,23 +121,24 @@ def transcribe_in_parallel(
 
     def run_chunk(job: _Job, idx: int, chunk_path: Path) -> None:
         device = devices.get()
+        segments: list[dict] = []
         err: BaseException | None = None
         try:
             segments = transcribe_chunk(chunk_path, model, language, device=device)
-        except Exception as e:  # noqa: BLE001 — record, keep batch alive
+        except BaseException as e:  # noqa: BLE001 — record, keep batch alive
             log(f"  [{job.prepared.key}] chunk {idx} failed: {e}")
             segments, err = [], e
         finally:
             devices.put(device)
-        with job.lock:
-            job.results[idx] = segments
-            if err is not None:
-                job.failures += 1
-                job.last_error = err
-            job.remaining -= 1
-            done = job.remaining == 0
-        if done:
-            done_queue.put(job)
+            with job.lock:
+                job.results[idx] = segments
+                if err is not None:
+                    job.failures += 1
+                    job.last_error = err
+                job.remaining -= 1
+                done = job.remaining == 0
+            if done:
+                done_queue.put(job)
 
     with ThreadPoolExecutor(max_workers=len(gpu_ids)) as executor:
         for source in sources:

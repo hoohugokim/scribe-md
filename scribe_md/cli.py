@@ -378,7 +378,12 @@ def _resolve_gpu_ids(spec: str | None) -> list[int]:
     except gpu.GpuSpecError as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
-    return ids if len(ids) > 1 else []
+    if len(ids) <= 1:
+        console.print(
+            "[yellow]Note:[/yellow] only 1 CUDA device available; running sequentially."
+        )
+        return []
+    return ids
 
 
 def _output_path_for(
@@ -1014,55 +1019,62 @@ def _run_batch_sequential(
     """
     if kind == "file":
         for audio_file in inputs:
-            out = _output_path_for(audio_file, single_output, cfg.output_directory)
-            source = f"file: {audio_file.name}"
-            with tempfile.TemporaryDirectory(prefix="scribe-md-") as tmp:
-                converted = Path(tmp) / "converted.wav"
-                log("Converting to 16kHz mono...")
-                audio.convert_to_16k_mono(audio_file, converted)
-                file_duration = audio.get_duration(converted)
-                metadata = _build_obsidian_metadata(
-                    source=source, duration=file_duration,
-                    language=opts.language, model=opts.model,
-                )
-
-                def write_fn(text: str, output_path: Path, _meta=metadata) -> None:
-                    _write_obsidian_output(
-                        text, output_path, opts.vault, daily_note, opts.frontmatter,
-                        _meta, opts.daily_note_folder,
+            try:
+                out = _output_path_for(audio_file, single_output, cfg.output_directory)
+                source = f"file: {audio_file.name}"
+                with tempfile.TemporaryDirectory(prefix="scribe-md-") as tmp:
+                    converted = Path(tmp) / "converted.wav"
+                    log("Converting to 16kHz mono...")
+                    audio.convert_to_16k_mono(audio_file, converted)
+                    file_duration = audio.get_duration(converted)
+                    metadata = _build_obsidian_metadata(
+                        source=source, duration=file_duration,
+                        language=opts.language, model=opts.model,
                     )
 
-                turns = None
-                if opts.diarize:
-                    turns = _run_diarization(
-                        converted, hf_token=opts.hf_token,
-                        num_speakers=opts.num_speakers,
-                    )
-                if _should_chunk(file_duration, chunk_seconds):
-                    incremental_enabled, incremental_output = _resolve_incremental_output(
-                        out, vault=opts.vault, daily_note=daily_note,
-                        incremental=incremental,
-                    )
-                    _transcribe_chunked(
-                        converted, out, opts.model, opts.language, opts.ts,
-                        chunk_seconds, overlap_seconds,
-                        timestamp_mode=opts.ts_mode, paragraph_gap=opts.paragraph_gap,
-                        incremental=incremental_enabled,
-                        incremental_output=incremental_output,
-                        write_fn=write_fn,
-                        clean=opts.clean, summarize=summarize,
-                        summary_model=opts.summary_model,
-                        diarize_turns=turns,
-                    )
-                else:
-                    _transcribe_single(
-                        converted, out, opts.model, opts.language, opts.ts,
-                        timestamp_mode=opts.ts_mode, paragraph_gap=opts.paragraph_gap,
-                        write_fn=write_fn,
-                        clean=opts.clean, summarize=summarize,
-                        summary_model=opts.summary_model,
-                        diarize_turns=turns,
-                    )
+                    def write_fn(text: str, output_path: Path, _meta=metadata) -> None:
+                        _write_obsidian_output(
+                            text, output_path, opts.vault, daily_note, opts.frontmatter,
+                            _meta, opts.daily_note_folder,
+                        )
+
+                    turns = None
+                    if opts.diarize:
+                        turns = _run_diarization(
+                            converted, hf_token=opts.hf_token,
+                            num_speakers=opts.num_speakers,
+                        )
+                    if _should_chunk(file_duration, chunk_seconds):
+                        incremental_enabled, incremental_output = _resolve_incremental_output(
+                            out, vault=opts.vault, daily_note=daily_note,
+                            incremental=incremental,
+                        )
+                        _transcribe_chunked(
+                            converted, out, opts.model, opts.language, opts.ts,
+                            chunk_seconds, overlap_seconds,
+                            timestamp_mode=opts.ts_mode, paragraph_gap=opts.paragraph_gap,
+                            incremental=incremental_enabled,
+                            incremental_output=incremental_output,
+                            write_fn=write_fn,
+                            clean=opts.clean, summarize=summarize,
+                            summary_model=opts.summary_model,
+                            diarize_turns=turns,
+                        )
+                    else:
+                        _transcribe_single(
+                            converted, out, opts.model, opts.language, opts.ts,
+                            timestamp_mode=opts.ts_mode, paragraph_gap=opts.paragraph_gap,
+                            write_fn=write_fn,
+                            clean=opts.clean, summarize=summarize,
+                            summary_model=opts.summary_model,
+                            diarize_turns=turns,
+                        )
+            except DiskFullError:
+                raise  # Disk-full is fatal even for multi-file
+            except typer.Exit:
+                raise
+            except Exception as e:
+                console.print(f"[yellow]Skipping {audio_file.name}: {e}[/yellow]")
     else:
         # kind == "url": each element is (url_str, title_or_None)
         for entry_url, entry_title in inputs:

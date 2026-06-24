@@ -69,4 +69,3 @@ for the full `--gpus` grammar and scope notes (Vulkan runs sequentially).
 - `scribe-md live` -> "Live system-audio capture is macOS-only for now."
 - `--summarize` -> "Summarization (mlx-lm) is macOS-only for now."
 - `--diarize` (pyannote, CPU) is expected to work but is not verified on Linux.
----

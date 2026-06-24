@@ -1,8 +1,10 @@
 # tests/test_cli_batch.py
 import pytest
+from pathlib import Path
 from typer.testing import CliRunner
 from scribe_md import cli
 from scribe_md.cli import app, _resolve_gpu_ids
+from scribe_md.transcriber import TranscriptionError
 
 runner = CliRunner()
 
@@ -56,3 +58,40 @@ def test_url_rejects_output_with_multiple_inputs(monkeypatch):
     )
     assert result.exit_code == 1
     assert "single input only" in result.output
+
+
+def test_file_batch_continues_after_per_file_error(monkeypatch, tmp_path):
+    """A TranscriptionError on the middle file must not abort the batch.
+
+    The other files must still be processed and the command exits 0.
+    """
+    a = tmp_path / "a.wav"
+    b = tmp_path / "b.wav"
+    c = tmp_path / "c.wav"
+    for f in (a, b, c):
+        f.write_bytes(b"\x00" * 100)
+
+    monkeypatch.setattr("scribe_md.cli.load_config", lambda: cli.ScribeMdConfig())
+
+    converted_files: list[Path] = []
+
+    def fake_convert(src, dst):
+        converted_files.append(src)
+        # Raise for the middle file
+        if src == b:
+            raise TranscriptionError("simulated failure for b.wav")
+        dst.write_bytes(b"\x00" * 100)
+
+    monkeypatch.setattr("scribe_md.cli.audio.convert_to_16k_mono", fake_convert)
+    monkeypatch.setattr("scribe_md.cli.audio.get_duration", lambda p: 1.0)
+    monkeypatch.setattr("scribe_md.cli._transcribe_single",
+                        lambda *a, **kw: None)
+    monkeypatch.setattr("scribe_md.cli._resolve_gpu_ids", lambda spec: [])
+
+    result = runner.invoke(app, ["file", str(a), str(b), str(c)])
+
+    assert result.exit_code == 0, f"Expected exit 0, got {result.exit_code}. Output:\n{result.output}"
+    # a and c must have been attempted; b raised but should be skipped
+    assert a in converted_files
+    assert b in converted_files
+    assert c in converted_files
