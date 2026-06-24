@@ -1,6 +1,7 @@
 """scribe-md CLI: Transcribe system audio and YouTube videos to Markdown."""
 
 import json
+import shutil
 import signal
 import tempfile
 from dataclasses import dataclass
@@ -10,8 +11,8 @@ from typing import Annotated, Optional
 import typer
 from rich.console import Console
 
-from . import audio, capture, diarize, downloader, merger, obsidian, postprocess, transcriber
-from . import platform_support
+from . import audio, capture, diarize, downloader, gpu, merger, obsidian, postprocess, transcriber
+from . import platform_support, scheduler
 from .audio import AudioConversionError, DiskFullError
 from .capture import CaptureError
 from .diarize import DiarizationError
@@ -22,6 +23,7 @@ from .config import (
     init_user_config,
     load_config,
 )
+from .scheduler import PreparedSource
 from .transcriber import DEFAULT_MODEL, MODEL_PRESETS, TranscriptionError
 from .utils import log, sanitize_filename
 
@@ -63,6 +65,12 @@ _SummaryModel = Annotated[Optional[str], typer.Option("--summary-model", help="O
 _Diarize = Annotated[Optional[bool], typer.Option("--diarize/--no-diarize", help="Enable speaker diarization (requires pyannote-audio)")]
 _HfToken = Annotated[Optional[str], typer.Option("--hf-token", help="HuggingFace token for diarization model")]
 _NumSpeakers = Annotated[Optional[int], typer.Option("--num-speakers", help="Number of speakers (0 = auto-detect)")]
+_FromFile = Annotated[Optional[Path], typer.Option(
+    "--from-file", help="Read inputs (one per line; '#' comments allowed) from a file",
+)]
+_Gpus = Annotated[Optional[str], typer.Option(
+    "--gpus", help="GPUs for parallel transcription: 'auto', N, or '0,1' (CUDA only)",
+)]
 
 # ---------------------------------------------------------------------------
 # Config subcommand group
@@ -315,6 +323,85 @@ def _validate_daily_note(daily_note: bool, vault: str) -> None:
         raise typer.Exit(1)
 
 
+def _collect_inputs(positional: list[str], from_file: Path | None) -> list[str]:
+    """Merge positional inputs with a --from-file list; fail fast if empty."""
+    inputs = list(positional or [])
+    if from_file is not None:
+        for line in from_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                inputs.append(line)
+    if not inputs:
+        console.print("[red]Error:[/red] no inputs given (positional or --from-file).")
+        raise typer.Exit(1)
+    return inputs
+
+
+def _validate_single_output(inputs: list, output: Path | None) -> None:
+    """`-o/--output` names one file, so reject it with multiple inputs."""
+    if output is not None and len(inputs) > 1:
+        console.print(
+            "[red]Error:[/red] --output/-o works with a single input only; "
+            "with multiple inputs, outputs are written to the output directory."
+        )
+        raise typer.Exit(1)
+
+
+def _backend_is_cuda() -> bool:
+    """True only when the active backend is whisper.cpp built for CUDA."""
+    from .backends import get_backend
+    from .backends.whispercpp import _read_built_accel, detect_accel
+
+    backend = get_backend()
+    if backend.name != "whispercpp":
+        return False
+    return (_read_built_accel() or detect_accel()) == "cuda"
+
+
+def _resolve_gpu_ids(spec: str | None) -> list[int]:
+    """Resolve --gpus to device ids, or [] to mean 'run sequentially'.
+
+    Returns [] for the default/single case and for non-CUDA backends (with a
+    one-line notice), so callers treat [] as the existing sequential path.
+    """
+    spec = (spec or "").strip().lower()
+    if spec in ("", "1"):
+        return []
+    if not _backend_is_cuda():
+        console.print(
+            "[yellow]Note:[/yellow] --gpus needs the CUDA whisper.cpp backend; "
+            "running sequentially on this platform."
+        )
+        return []
+    try:
+        ids = gpu.resolve_gpu_spec(spec, gpu.discover_cuda_devices())
+    except gpu.GpuSpecError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    if len(ids) <= 1:
+        console.print(
+            "[yellow]Note:[/yellow] only 1 CUDA device available; running sequentially."
+        )
+        return []
+    return ids
+
+
+def _output_path_for(
+    src: Path | None,
+    single_output: Path | None,
+    output_directory: str,
+    *,
+    title: str | None = None,
+) -> Path:
+    """Determine the output path for one source."""
+    if single_output is not None:
+        return single_output
+    out_dir = Path(output_directory)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = sanitize_filename(title) if title is not None else src.stem
+    return out_dir / f"{stem}.md"
+
+
 def _should_chunk(duration: float, chunk_seconds: float) -> bool:
     """Return whether an input should use the chunked pipeline."""
     return chunk_seconds > 0 and duration > chunk_seconds
@@ -492,10 +579,7 @@ def _transcribe_chunk(
 
     Returns an empty list if the chunk is silent or has no speech.
     """
-    if audio.is_silent(chunk_path):
-        return []
-    result = transcriber.transcribe_audio(chunk_path, model=model, language=language)
-    return transcriber.extract_segments(result)
+    return scheduler.transcribe_chunk(chunk_path, model, language)
 
 
 def _transcribe_chunked(
@@ -633,7 +717,9 @@ def _transcribe_chunks_sequential(
 
 @app.command()
 def file(
-    audio_file: Path = typer.Argument(..., help="Path to audio file (WAV, MP3, etc.)"),
+    audio_files: list[Path] = typer.Argument(None, help="Audio file(s) (WAV, MP3, ...)"),
+    from_file: _FromFile = None,
+    gpus: _Gpus = None,
     output: _Output = None,
     language: _Language = None,
     model: _Model = None,
@@ -658,15 +744,17 @@ def file(
     hf_token: _HfToken = None,
     num_speakers: _NumSpeakers = None,
 ) -> None:
-    """Transcribe an existing audio file to Markdown."""
+    """Transcribe one or more existing audio files to Markdown."""
     _guard_summarize_on_linux(summarize)
-    if not audio_file.exists():
-        console.print(f"[red]Error:[/red] {audio_file} not found")
-        raise typer.Exit(1)
-
-    if audio_file.stat().st_size == 0:
-        console.print(f"[red]Error:[/red] {audio_file} is empty (0 bytes)")
-        raise typer.Exit(1)
+    inputs = [Path(p) for p in _collect_inputs([str(p) for p in (audio_files or [])], from_file)]
+    _validate_single_output(inputs, output)
+    for p in inputs:
+        if not p.exists():
+            console.print(f"[red]Error:[/red] {p} not found")
+            raise typer.Exit(1)
+        if p.stat().st_size == 0:
+            console.print(f"[red]Error:[/red] {p} is empty (0 bytes)")
+            raise typer.Exit(1)
 
     cfg = load_config()
     opts = _resolve_common_options(
@@ -678,68 +766,18 @@ def file(
     )
     r_chunk_seconds = _resolve(chunk_seconds, cfg.chunk_seconds)
     r_incremental = _resolve(incremental, cfg.incremental)
-
-    if output:
-        out = output
-    else:
-        out_dir = Path(cfg.output_directory)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out = out_dir / audio_file.with_suffix(".md").name
-
-    source = f"file: {audio_file.name}"
+    gpu_ids = _resolve_gpu_ids(_resolve(gpus, cfg.gpus))
+    if gpu_ids and r_incremental:
+        log("Incremental output disabled under multi-GPU parallelism.")
+        r_incremental = False
 
     try:
-        with tempfile.TemporaryDirectory(prefix="scribe-md-") as tmp:
-            # Convert to 16kHz mono WAV
-            converted = Path(tmp) / "converted.wav"
-            log("Converting to 16kHz mono...")
-            audio.convert_to_16k_mono(audio_file, converted)
-
-            file_duration = audio.get_duration(converted)
-            metadata = _build_obsidian_metadata(
-                source=source, duration=file_duration,
-                language=opts.language, model=opts.model,
-            )
-
-            def write_fn(text: str, output_path: Path) -> None:
-                _write_obsidian_output(
-                    text, output_path, opts.vault, daily_note, opts.frontmatter,
-                    metadata, opts.daily_note_folder,
-                )
-
-            # Run diarization on the full audio if requested
-            turns = None
-            if opts.diarize:
-                turns = _run_diarization(
-                    converted, hf_token=opts.hf_token,
-                    num_speakers=opts.num_speakers,
-                )
-
-            if _should_chunk(file_duration, r_chunk_seconds):
-                incremental_enabled, incremental_output = _resolve_incremental_output(
-                    out, vault=opts.vault, daily_note=daily_note,
-                    incremental=r_incremental,
-                )
-                _transcribe_chunked(
-                    converted, out, opts.model, opts.language, opts.ts,
-                    r_chunk_seconds, opts.overlap_seconds,
-                    timestamp_mode=opts.ts_mode, paragraph_gap=opts.paragraph_gap,
-                    incremental=incremental_enabled,
-                    incremental_output=incremental_output,
-                    write_fn=write_fn,
-                    clean=opts.clean, summarize=summarize,
-                    summary_model=opts.summary_model,
-                    diarize_turns=turns,
-                )
-            else:
-                _transcribe_single(
-                    converted, out, opts.model, opts.language, opts.ts,
-                    timestamp_mode=opts.ts_mode, paragraph_gap=opts.paragraph_gap,
-                    write_fn=write_fn,
-                    clean=opts.clean, summarize=summarize,
-                    summary_model=opts.summary_model,
-                    diarize_turns=turns,
-                )
+        _run_batch(
+            inputs, kind="file", single_output=output, cfg=cfg, opts=opts,
+            chunk_seconds=r_chunk_seconds, overlap_seconds=opts.overlap_seconds,
+            incremental=r_incremental, daily_note=daily_note, summarize=summarize,
+            gpu_ids=gpu_ids,
+        )
     except (DiarizationError, ImportError) as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
@@ -769,7 +807,9 @@ def file(
 
 @app.command()
 def url(
-    video_url: str = typer.Argument(..., help="YouTube URL or playlist URL"),
+    urls: list[str] = typer.Argument(None, help="YouTube URL(s) or playlist URL(s)"),
+    from_file: _FromFile = None,
+    gpus: _Gpus = None,
     output: _Output = None,
     language: _Language = None,
     model: _Model = None,
@@ -794,8 +834,10 @@ def url(
     hf_token: _HfToken = None,
     num_speakers: _NumSpeakers = None,
 ) -> None:
-    """Transcribe audio from a YouTube URL to Markdown."""
+    """Transcribe audio from one or more YouTube URLs to Markdown."""
     _guard_summarize_on_linux(summarize)
+    inputs = _collect_inputs(list(urls or []), from_file)
+    _validate_single_output(inputs, output)
     cfg = load_config()
     opts = _resolve_common_options(
         cfg, model=model, language=language, timestamps=timestamps,
@@ -806,62 +848,33 @@ def url(
     )
     r_chunk_seconds = _resolve(chunk_seconds, cfg.chunk_seconds)
     r_incremental = _resolve(incremental, cfg.incremental)
+    gpu_ids = _resolve_gpu_ids(_resolve(gpus, cfg.gpus))
+    if gpu_ids and r_incremental:
+        log("Incremental output disabled under multi-GPU parallelism.")
+        r_incremental = False
 
+    # Expand each input URL: playlists expand to (entry_url, title) pairs;
+    # single URLs produce one pair. This keeps the loop uniform.
     try:
-        # One metadata fetch both decides playlist-vs-single (>1 entry means a
-        # playlist) and supplies titles, so we neither repeat the
-        # --flat-playlist call nor re-fetch per-video metadata during download.
-        entries = downloader.get_playlist_entries(video_url)
-        if len(entries) > 1:
-            log(f"Playlist with {len(entries)} videos")
+        expanded: list[tuple[str, str | None]] = []
+        for raw_url in inputs:
+            entries = downloader.get_playlist_entries(raw_url)
+            if len(entries) > 1:
+                log(f"Playlist with {len(entries)} videos")
+                for i, entry in enumerate(entries):
+                    entry_url = entry.get("url") or entry.get("webpage_url", "")
+                    entry_title = entry.get("title", f"video_{i}")
+                    expanded.append((entry_url, entry_title))
+            else:
+                single_title = entries[0].get("title") if entries else None
+                expanded.append((raw_url, single_title))
 
-            for i, entry in enumerate(entries):
-                entry_url = entry.get("url") or entry.get("webpage_url", "")
-                entry_title = entry.get("title", f"video_{i}")
-                log(f"\n[{i + 1}/{len(entries)}] {entry_title}")
-
-                try:
-                    _transcribe_url(
-                        entry_url, output=None, model=opts.model, language=opts.language,
-                        timestamps=opts.ts, chunk_seconds=r_chunk_seconds,
-                        overlap_seconds=opts.overlap_seconds,
-                        timestamp_mode=opts.ts_mode, paragraph_gap=opts.paragraph_gap,
-                        incremental=r_incremental,
-                        vault=opts.vault, daily_note=daily_note,
-                        frontmatter=opts.frontmatter,
-                        daily_note_folder=opts.daily_note_folder,
-                        clean=opts.clean, summarize=summarize,
-                        summary_model=opts.summary_model,
-                        diarize_enabled=opts.diarize, hf_token=opts.hf_token,
-                        num_speakers=opts.num_speakers,
-                        output_directory=cfg.output_directory,
-                        title=entry_title,
-                    )
-                except DiskFullError:
-                    raise  # Disk-full is fatal even for playlists
-                except typer.Exit:
-                    raise
-                except Exception as e:
-                    console.print(f"[yellow]Skipping: {e}[/yellow]")
-        else:
-            # entries[0] (when present) carries the title for the single video.
-            single_title = entries[0].get("title") if entries else None
-            _transcribe_url(
-                video_url, output=output, model=opts.model, language=opts.language,
-                timestamps=opts.ts, chunk_seconds=r_chunk_seconds,
-                overlap_seconds=opts.overlap_seconds,
-                timestamp_mode=opts.ts_mode, paragraph_gap=opts.paragraph_gap,
-                incremental=r_incremental,
-                vault=opts.vault, daily_note=daily_note,
-                frontmatter=opts.frontmatter,
-                daily_note_folder=opts.daily_note_folder,
-                clean=opts.clean, summarize=summarize,
-                summary_model=opts.summary_model,
-                diarize_enabled=opts.diarize, hf_token=opts.hf_token,
-                num_speakers=opts.num_speakers,
-                output_directory=cfg.output_directory,
-                title=single_title,
-            )
+        _run_batch(
+            expanded, kind="url", single_output=output, cfg=cfg, opts=opts,
+            chunk_seconds=r_chunk_seconds, overlap_seconds=opts.overlap_seconds,
+            incremental=r_incremental, daily_note=daily_note, summarize=summarize,
+            gpu_ids=gpu_ids,
+        )
     except (DiarizationError, ImportError) as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
@@ -879,6 +892,217 @@ def url(
         else:
             console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
+
+
+def _run_batch(
+    inputs: list,
+    *,
+    kind: str,
+    single_output: Path | None,
+    cfg: ScribeMdConfig,
+    opts: _Resolved,
+    chunk_seconds: float,
+    overlap_seconds: float,
+    incremental: bool,
+    daily_note: bool,
+    summarize: bool,
+    gpu_ids: list[int],
+) -> None:
+    """Dispatch a batch of sources to sequential or parallel pipelines.
+
+    *kind* is ``"file"`` or ``"url"``.  For ``kind="file"`` each element of
+    *inputs* is a ``Path``; for ``kind="url"`` each element is a
+    ``(url_str, title_or_None)`` tuple.
+
+    When *gpu_ids* is empty the existing sequential helpers are used unchanged;
+    when *gpu_ids* has more than one device the scheduler fan-out is used.
+    """
+    if not gpu_ids:
+        _run_batch_sequential(
+            inputs, kind=kind, single_output=single_output,
+            cfg=cfg, opts=opts, chunk_seconds=chunk_seconds,
+            overlap_seconds=overlap_seconds, incremental=incremental,
+            daily_note=daily_note, summarize=summarize,
+        )
+        return
+
+    log(f"Transcribing {len(inputs)} source(s) across GPUs {gpu_ids}...")
+    # Warm up once so workers don't race to build the binary / download the model.
+    from .backends import get_backend
+    from .backends import whispercpp
+    if get_backend().name == "whispercpp":
+        whispercpp.ensure_whisper_binary()
+        whispercpp._ensure_model_file(opts.model)
+
+    def prepare(source) -> PreparedSource:
+        tmpdir = Path(tempfile.mkdtemp(prefix="scribe-md-"))
+        if kind == "url":
+            entry_url, title = source
+            raw, resolved_title = downloader.download_audio(entry_url, tmpdir, title=title)
+            src_label = f"YouTube: {resolved_title}"
+            out = _output_path_for(None, single_output, cfg.output_directory, title=resolved_title)
+        else:
+            title = source.stem
+            raw = source
+            src_label = f"file: {source.name}"
+            out = _output_path_for(source, single_output, cfg.output_directory)
+        converted = tmpdir / "converted.wav"
+        log(f"Converting {title} to 16kHz mono...")
+        audio.convert_to_16k_mono(raw, converted)
+        duration = audio.get_duration(converted)
+        if _should_chunk(duration, chunk_seconds):
+            chunks = audio.split_audio(converted, tmpdir, chunk_seconds, overlap_seconds)
+        else:
+            chunks = [converted]
+        turns = (
+            _run_diarization(converted, hf_token=opts.hf_token, num_speakers=opts.num_speakers)
+            if opts.diarize
+            else None
+        )
+        payload = {"out": out, "duration": duration, "turns": turns, "source": src_label}
+        return PreparedSource(
+            key=out.name, chunk_paths=chunks,
+            cleanup=lambda: shutil.rmtree(tmpdir, ignore_errors=True),
+            payload=payload,
+        )
+
+    def finalize(prepared: PreparedSource, ordered: list[list[dict]]) -> None:
+        p = prepared.payload
+        if p["turns"] is not None:
+            for idx, segs in enumerate(ordered):
+                offset = 0.0 if idx == 0 else idx * chunk_seconds - overlap_seconds
+                ordered[idx] = diarize.assign_speakers(segs, p["turns"], time_offset=offset)
+        text = merger.merge_segments(
+            ordered, chunk_duration=chunk_seconds, overlap=overlap_seconds,
+            timestamps=opts.ts, timestamp_mode=opts.ts_mode,
+            paragraph_gap=opts.paragraph_gap,
+        )
+        text = _apply_postprocessing(
+            text, clean=opts.clean, summarize=summarize, summary_model=opts.summary_model,
+        )
+        metadata = _build_obsidian_metadata(
+            source=p["source"], duration=p["duration"],
+            language=opts.language, model=opts.model,
+        )
+        _write_obsidian_output(
+            text, p["out"], opts.vault, daily_note, opts.frontmatter,
+            metadata, opts.daily_note_folder,
+        )
+
+    summary = scheduler.transcribe_in_parallel(
+        inputs, gpu_ids=gpu_ids, model=opts.model, language=opts.language,
+        prepare=prepare, finalize=finalize, max_inflight=max(2, len(gpu_ids)),
+    )
+    log(f"Done: {len(summary.succeeded)} written, {len(summary.skipped)} skipped.")
+    if summary.all_failed:
+        console.print("[red]Error:[/red] all sources failed to transcribe.")
+        raise typer.Exit(1)
+
+
+def _run_batch_sequential(
+    inputs: list,
+    *,
+    kind: str,
+    single_output: Path | None,
+    cfg: ScribeMdConfig,
+    opts: _Resolved,
+    chunk_seconds: float,
+    overlap_seconds: float,
+    incremental: bool,
+    daily_note: bool,
+    summarize: bool,
+) -> None:
+    """Run the existing sequential pipeline for each source in *inputs*.
+
+    For ``kind="file"`` each element is a ``Path``; for ``kind="url"`` each
+    element is a ``(url_str, title_or_None)`` tuple.
+    """
+    if kind == "file":
+        for audio_file in inputs:
+            try:
+                out = _output_path_for(audio_file, single_output, cfg.output_directory)
+                source = f"file: {audio_file.name}"
+                with tempfile.TemporaryDirectory(prefix="scribe-md-") as tmp:
+                    converted = Path(tmp) / "converted.wav"
+                    log("Converting to 16kHz mono...")
+                    audio.convert_to_16k_mono(audio_file, converted)
+                    file_duration = audio.get_duration(converted)
+                    metadata = _build_obsidian_metadata(
+                        source=source, duration=file_duration,
+                        language=opts.language, model=opts.model,
+                    )
+
+                    def write_fn(text: str, output_path: Path, _meta=metadata) -> None:
+                        _write_obsidian_output(
+                            text, output_path, opts.vault, daily_note, opts.frontmatter,
+                            _meta, opts.daily_note_folder,
+                        )
+
+                    turns = None
+                    if opts.diarize:
+                        turns = _run_diarization(
+                            converted, hf_token=opts.hf_token,
+                            num_speakers=opts.num_speakers,
+                        )
+                    if _should_chunk(file_duration, chunk_seconds):
+                        incremental_enabled, incremental_output = _resolve_incremental_output(
+                            out, vault=opts.vault, daily_note=daily_note,
+                            incremental=incremental,
+                        )
+                        _transcribe_chunked(
+                            converted, out, opts.model, opts.language, opts.ts,
+                            chunk_seconds, overlap_seconds,
+                            timestamp_mode=opts.ts_mode, paragraph_gap=opts.paragraph_gap,
+                            incremental=incremental_enabled,
+                            incremental_output=incremental_output,
+                            write_fn=write_fn,
+                            clean=opts.clean, summarize=summarize,
+                            summary_model=opts.summary_model,
+                            diarize_turns=turns,
+                        )
+                    else:
+                        _transcribe_single(
+                            converted, out, opts.model, opts.language, opts.ts,
+                            timestamp_mode=opts.ts_mode, paragraph_gap=opts.paragraph_gap,
+                            write_fn=write_fn,
+                            clean=opts.clean, summarize=summarize,
+                            summary_model=opts.summary_model,
+                            diarize_turns=turns,
+                        )
+            except DiskFullError:
+                raise  # Disk-full is fatal even for multi-file
+            except typer.Exit:
+                raise
+            except Exception as e:
+                console.print(f"[yellow]Skipping {audio_file.name}: {e}[/yellow]")
+    else:
+        # kind == "url": each element is (url_str, title_or_None)
+        for entry_url, entry_title in inputs:
+            try:
+                _transcribe_url(
+                    entry_url,
+                    output=single_output if len(inputs) == 1 else None,
+                    model=opts.model, language=opts.language,
+                    timestamps=opts.ts, chunk_seconds=chunk_seconds,
+                    overlap_seconds=overlap_seconds,
+                    timestamp_mode=opts.ts_mode, paragraph_gap=opts.paragraph_gap,
+                    incremental=incremental,
+                    vault=opts.vault, daily_note=daily_note,
+                    frontmatter=opts.frontmatter,
+                    daily_note_folder=opts.daily_note_folder,
+                    clean=opts.clean, summarize=summarize,
+                    summary_model=opts.summary_model,
+                    diarize_enabled=opts.diarize, hf_token=opts.hf_token,
+                    num_speakers=opts.num_speakers,
+                    output_directory=cfg.output_directory,
+                    title=entry_title,
+                )
+            except DiskFullError:
+                raise  # Disk-full is fatal even for multi-url
+            except typer.Exit:
+                raise
+            except Exception as e:
+                console.print(f"[yellow]Skipping: {e}[/yellow]")
 
 
 def _transcribe_url(
