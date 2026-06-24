@@ -336,6 +336,9 @@ num_speakers = 0           # 0 = auto-detect
 [live]
 keep_audio = false
 incremental = true
+
+[gpu]
+gpus = ""                  # "", "auto", N, or "0,1" (same as --gpus)
 ```
 
 ### Project-local config
