@@ -11,7 +11,7 @@ import typer
 from rich.console import Console
 
 from . import audio, capture, diarize, downloader, merger, obsidian, postprocess, transcriber
-from . import platform_support
+from . import platform_support, scheduler
 from .audio import AudioConversionError, DiskFullError
 from .capture import CaptureError
 from .diarize import DiarizationError
@@ -492,10 +492,7 @@ def _transcribe_chunk(
 
     Returns an empty list if the chunk is silent or has no speech.
     """
-    if audio.is_silent(chunk_path):
-        return []
-    result = transcriber.transcribe_audio(chunk_path, model=model, language=language)
-    return transcriber.extract_segments(result)
+    return scheduler.transcribe_chunk(chunk_path, model, language)
 
 
 def _transcribe_chunked(
