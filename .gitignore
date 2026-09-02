@@ -17,6 +17,13 @@ capture/.build/
 !README.md
 !CHANGELOG.md
 !docs/**/*.md
+!AGENTS.md
+!AGENT.md
+!CLAUDE.md
+!HANDOFF.md
+!TASKS.md
+!DECISIONS.md
+!ROADMAP.md
 output/
 
 # Session handoff files

@@ -1,0 +1,22 @@
+# .statutor.yaml — statutor mutation policy. Embedded defaults apply only
+# before a policy is committed (or when the candidate removes it explicitly).
+bash_guard: true
+governed:
+  - pattern: AGENTS.md
+    policy: constitution
+    hard_max_lines: 200
+  - pattern: HANDOFF.md
+    policy: overwrite_bounded
+    max_lines: 40
+    required_sections:
+      - "## Goal"
+      - "## Last verified state"
+      - "## Next action"
+      - "## Gotchas"
+      - "## Do not touch"
+  - pattern: DECISIONS.md
+    policy: append_only
+  - pattern: TASKS.md
+    policy: state
+  - pattern: plans/archive/*
+    policy: frozen
