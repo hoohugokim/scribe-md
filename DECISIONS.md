@@ -18,3 +18,10 @@
 **Context:** v0.3.0 landed multi-input and CUDA `--gpus`. `scribe_md/cli.py` still owns orchestration, Rich output, and `typer.Exit`, and file, url, and live each run their own copy of the pipeline.
 **Decision:** The next milestone is a scribe-md TUI. It calls one job interface extracted from the CLI. It does not grow a second pipeline. T-0001, the CUDA smoke, stays open and does not block the TUI.
 **Consequences:** Progress and errors have to leave the CLI before widgets exist. Widgets do not call ffmpeg, whisper, or yt-dlp.
+
+## D-0004 — The TUI is a branch experiment, not the milestone
+**Status:** accepted
+**Supersedes:** D-0003's claim that the TUI is the next milestone
+**Context:** D-0003 fixed the TUI as the milestone on main. We want to try that design without making it the committed product path.
+**Decision:** Explore the TUI on the short-lived branch `explore/tui`. main has no fixed product milestone. D-0002 still holds: main is the only long-lived branch. The one-job seam in D-0003 still applies inside the experiment.
+**Consequences:** T-0002 is not on the main queue. CUDA smoke stays T-0001. Merging or deleting `explore/tui` is a later decision.
