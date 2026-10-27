@@ -16,7 +16,7 @@
 - Config layered: CLI flags > `.scribe-md.toml` (project) > `~/.config/scribe-md/config.toml` (user) > defaults in `config.py`.
 - Long audio chunked by default: `audio.py` ffmpeg split + `merger.py` overlap dedup; `--incremental` writes interim output.
 - Obsidian output via `obsidian.py`: vault-relative paths, YAML frontmatter, `--daily-note` append.
-- Active branch `feat/multi-gpu-parallel`: multi-input (`file`/`url` batch) + `--gpus auto|N|0,1` via `scheduler.py`/`gpu.py`; CUDA-only parallelism (Vulkan/MLX sequential).
+- Multi-input and `--gpus` are on main (v0.3.0) via `scheduler.py`/`gpu.py`. Parallelism is CUDA-only; Vulkan/MLX stay sequential. main is the only long-lived branch (D-0002).
 
 ## Pitfalls (hard-won, one line each)
 - <add only after an agent actually made the mistake>

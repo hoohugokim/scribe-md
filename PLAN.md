@@ -147,14 +147,12 @@ scribe-md/
 - `resolve_model()` maps short names to full HF repo paths
 - Default: `large-v3` (mlx-community/whisper-large-v3-mlx)
 
-### 6.2 Parallel chunk transcription — NOT PURSUED (sequential by design)
-- Investigated, then deliberately dropped: mlx-whisper saturates the GPU with a
-  single inference and parallel Metal command buffers crash on Apple Silicon, so
-  chunks are transcribed **sequentially**. There is no `--workers`/`--no-parallel`
-  flag.
-- The whisper.cpp (Linux) backend runs as a subprocess and could in principle
-  parallelize, but currently inherits the same sequential path. (See the
-  performance notes — a potential future improvement.)
+### 6.2 Parallel chunk transcription — CUDA path landed in v0.3.0
+- mlx-whisper saturates the GPU with a single inference and parallel Metal
+  command buffers crash on Apple Silicon, so macOS chunks stay sequential.
+  There is no `--workers` / `--no-parallel` flag.
+- whisper.cpp on CUDA uses `scribe_md/scheduler.py` and `--gpus`
+  (`auto`, `N`, or `0,1`). Vulkan stays sequential. Hardware smoke is T-0001.
 
 ### ~~6.3 Incremental output~~ DONE
 - ~~In chunked mode, append to `.md` file as each chunk is transcribed~~
@@ -184,7 +182,7 @@ scribe-md/
 | ~~P2~~ | ~~6.3 Incremental output~~ | ~~Small~~ | DONE |
 | ~~P3~~ | ~~4.1 Speaker diarization~~ | ~~Large~~ | DONE |
 | ~~P3~~ | ~~4.4 LLM post-processing~~ | ~~Medium~~ | DONE |
-| P3 | 6.2 Parallel transcription | Medium | NOT PURSUED (sequential by design) |
+| P3 | 6.2 Parallel transcription | Medium | CUDA `--gpus` landed in v0.3.0; MLX/Vulkan stay sequential |
 
 ---
 

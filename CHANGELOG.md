@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-27
+
 ### Added
 - Multi-input transcription: `file` and `url` accept several inputs in one run
   (plus `--from-file`), each written to its own `.md`.
@@ -125,7 +127,8 @@ Initial release.
   → project-local `.scribe-md.toml` → CLI flags.
 - Configurable output directory.
 
-[Unreleased]: https://github.com/hoohugokim/scribe-md/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/hoohugokim/scribe-md/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/hoohugokim/scribe-md/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/hoohugokim/scribe-md/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/hoohugokim/scribe-md/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/hoohugokim/scribe-md/compare/v0.1.0...v0.1.1
