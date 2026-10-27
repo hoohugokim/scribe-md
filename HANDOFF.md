@@ -1,28 +1,28 @@
 <!-- statutor: plane=state | policy=overwrite_bounded (max 40 lines) | writer=executor | OVERWRITE, NEVER APPEND -->
 # HANDOFF
 
-last_verified: 2026-10-27 by `pixi run pytest -q` (238 passed on 18efe98) and `gh pr merge 3` (main b1a79e9)
+last_verified: 2026-10-27 by `pixi run pytest -q` (240 passed)
 last_worker: grok
 last_machine: 1befd044f2ccc95033f353b2b7468adc
-handoff_id: 0a13255a2dbb27a393fe6a0262be71a2
-supersedes: none, 8a043208a3a3903f74859447cd5564a5
+handoff_id: e27b3164c1b0f68c3d67b1c24c8884b5
+supersedes: 0a13255a2dbb27a393fe6a0262be71a2
 
 ## Goal
-Keep main as the only long-lived branch. The next proof is the CUDA --gpus smoke.
+Build the TUI on one shared transcription job (D-0003). Widgets come after that seam.
 
 ## Last verified state
-- PR #3 is merged at b1a79e9. feat/multi-gpu-parallel is deleted locally and on origin.
-- v0.3.0 is staged in this commit. Unit tests passed (238). CUDA hardware smoke was not run.
-- stash@{0} (linux-support pixi.lock) is dropped. The worktree still has local pixi.lock drift, whisper.cpp pycache, and two repo-root media files.
+- main was v0.3.0 at 212a6ca. This commit keeps live-chunk indexes and sets the TUI milestone.
+- Live chunked merge now keeps a silent or failed chunk's index, so later timestamps stay put. Regression: tests/test_live_chunked.py.
+- `pixi run pytest -q`: 240 passed. CUDA smoke was not run.
 
 ## Next action
-On a Linux NVIDIA machine, run T-0001: Task 7 step 5 in docs/superpowers/plans/2026-06-24-multi-gpu-parallel.md (`SCRIBE_MD_WHISPER_ACCEL=cuda`, `pixi run -e cuda`, `--gpus auto`).
+T-0002: extract the job from scribe_md/cli.py. file, url, and the parallel prepare/finalize path should call it. The CLI keeps Typer and Rich. Do not start a TUI widget until that call exists.
 
 ## Gotchas
-- This machine is Apple Silicon, so --gpus falls back to sequential.
-- Do not commit pixi.lock drift, repo-root media, or vendor/whisper.cpp pycache.
+- The pipeline still prints and raises typer.Exit. Live SIGINT is process-global.
+- Live chunked mode accepts --diarize, then skips it after capture.
+- This machine is Apple Silicon. Do not commit pixi.lock drift, repo-root media, or whisper.cpp pycache.
 - bash_guard blocks shell writes to governed files.
-- Vulkan multi-GPU stays deferred (D-0002).
 
 ## Do not touch
 vendor/whisper.cpp/, capture/.build/, output/, plans/archive/, and the untracked media files in the repo root.

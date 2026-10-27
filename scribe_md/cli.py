@@ -505,6 +505,24 @@ def _run_diarization(
 # ---------------------------------------------------------------------------
 
 
+def _align_indexed_chunks(
+    indexed: list[tuple[int, list[dict]]],
+) -> list[list[dict]]:
+    """Place each chunk's segments at its capture index.
+
+    Live capture omits a silent or failed chunk from the saved results, but
+    merge offsets are ``index * chunk_seconds - overlap``. Dropping the slot
+    shifts every later timestamp. A missing index stays an empty list.
+    """
+    if not indexed:
+        return []
+    size = max(index for index, _segments in indexed) + 1
+    aligned: list[list[dict]] = [[] for _ in range(size)]
+    for index, segments in indexed:
+        aligned[index] = segments
+    return aligned
+
+
 def _append_incremental(output: Path, segments: list[dict]) -> None:
     """Append a chunk's raw transcription text to the output file.
 
@@ -1510,11 +1528,15 @@ def _live_chunked(
             log("No chunks were transcribed.")
             raise typer.Exit(1)
 
-        # Merge all chunks
-        all_segments: list[list[dict]] = []
+        # Merge all chunks. Use the capture index, not list position: a
+        # silent or failed chunk is absent here and must stay an empty slot.
+        indexed_segments = []
         for cj in sorted(chunk_jsons):
             data = json.loads(cj.read_text(encoding="utf-8"))
-            all_segments.append(data.get("segments", []))
+            indexed_segments.append(
+                (int(data["chunk_index"]), data.get("segments", []))
+            )
+        all_segments = _align_indexed_chunks(indexed_segments)
 
         # Diarization for live chunked mode is not supported (no full audio
         # available during capture).  Users should use single-capture mode
