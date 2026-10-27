@@ -17,8 +17,15 @@ class Backend(Protocol):
 
     name: str
 
-    def transcribe(self, audio_path: Path, *, model: str, language: str | None) -> dict:
-        """Transcribe a 16 kHz mono WAV, returning a result dict."""
+    def transcribe(
+        self, audio_path: Path, *, model: str, language: str | None,
+        device: str | None = None,
+    ) -> dict:
+        """Transcribe a 16 kHz mono WAV, returning a result dict.
+
+        ``device`` optionally pins a specific accelerator (e.g. a CUDA device
+        index); backends that cannot target a device ignore it.
+        """
         ...
 
     def describe(self) -> str:

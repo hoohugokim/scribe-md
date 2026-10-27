@@ -30,6 +30,7 @@ def transcribe_audio(
     audio_path: Path,
     model: str = DEFAULT_MODEL,
     language: str | None = None,
+    device: str | None = None,
 ) -> dict:
     """Validate audio_path and transcribe it via the active backend."""
     if not audio_path.exists():
@@ -52,7 +53,9 @@ def transcribe_audio(
     backend = get_backend()
     log(f"Transcribing {audio_path.name} via {backend.describe()}...")
     try:
-        return backend.transcribe(audio_path, model=model, language=language)
+        return backend.transcribe(
+            audio_path, model=model, language=language, device=device
+        )
     except TranscriptionError:
         raise
     except Exception as e:

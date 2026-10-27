@@ -271,14 +271,20 @@ class WhisperCppBackend:
         # back to live detection only when no build has been recorded yet.
         return f"whisper.cpp ({_read_built_accel() or detect_accel()})"
 
-    def transcribe(self, audio_path: Path, *, model: str, language: str | None) -> dict:
+    def transcribe(
+        self, audio_path: Path, *, model: str, language: str | None,
+        device: str | None = None,
+    ) -> dict:
         binary = ensure_whisper_binary()
         model_path = _ensure_model_file(model)
+        env = None
+        if device is not None:
+            env = {**os.environ, "CUDA_VISIBLE_DEVICES": device}
         with tempfile.TemporaryDirectory() as td:
             out_prefix = Path(td) / "out"
             cmd = _build_command(binary, model_path, audio_path, out_prefix, language)
             try:
-                result = subprocess.run(cmd, capture_output=True, text=True)
+                result = subprocess.run(cmd, capture_output=True, text=True, env=env)
             except OSError as e:
                 raise WhisperCppError(f"Failed to run whisper-cli: {e}")
             if result.returncode != 0:

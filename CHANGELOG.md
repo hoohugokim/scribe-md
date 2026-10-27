@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Multi-input transcription: `file` and `url` accept several inputs in one run
+  (plus `--from-file`), each written to its own `.md`.
+- `--gpus` (and `[gpu].gpus` config) transcribes chunks across multiple NVIDIA
+  GPUs in parallel (CUDA only; Vulkan/MLX run sequentially). `--incremental` is
+  disabled under multi-GPU.
+
 ## [0.2.1] - 2026-06-24
 
 ### Fixed

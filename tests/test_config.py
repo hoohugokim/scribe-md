@@ -95,3 +95,22 @@ def test_config_as_toml_redacts_hf_token():
 
     assert "hf_secret_token" not in rendered
     assert 'hf_token = "<set>"' in rendered
+
+
+# Task 5: [gpu].gpus setting
+import tomllib
+from scribe_md.config import _apply_toml, config_as_toml
+
+
+def test_gpu_section_parsed():
+    cfg = ScribeMdConfig()
+    _apply_toml(cfg, {"gpu": {"gpus": "auto"}}, "test")
+    assert cfg.gpus == "auto"
+
+
+def test_gpus_default_empty_and_round_trips_through_toml():
+    cfg = ScribeMdConfig()
+    assert cfg.gpus == ""
+    rendered = config_as_toml(cfg)
+    assert "[gpu]" in rendered
+    tomllib.loads(rendered)  # must remain valid TOML

@@ -52,6 +52,9 @@ num_speakers = 0          # exact speaker count (0 = auto-detect)
 [live]
 keep_audio = false
 incremental = true        # live mode defaults to incremental output
+
+[gpu]
+gpus = ""                 # "", "1", "auto", "N", or "0,1" (same as --gpus)
 """
 
 
@@ -86,6 +89,9 @@ class ScribeMdConfig:
     # [live]
     keep_audio: bool = False
     live_incremental: bool = True
+
+    # [gpu]
+    gpus: str = ""  # "", "1", "auto", "N", or "0,1" — same grammar as --gpus
 
     # Metadata — which files contributed to this config
     _sources: list[str] = field(default_factory=list, repr=False)
@@ -154,6 +160,10 @@ def _apply_toml(cfg: ScribeMdConfig, data: dict, source: str) -> None:
         cfg.keep_audio = bool(live["keep_audio"])
     if "incremental" in live:
         cfg.live_incremental = bool(live["incremental"])
+
+    gpu = data.get("gpu", {})
+    if "gpus" in gpu:
+        cfg.gpus = str(gpu["gpus"])
 
     cfg._sources.append(source)
 
@@ -246,6 +256,9 @@ def config_as_toml(cfg: ScribeMdConfig) -> str:
         "[live]",
         f"keep_audio = {'true' if cfg.keep_audio else 'false'}",
         f"incremental = {'true' if cfg.live_incremental else 'false'}",
+        "",
+        "[gpu]",
+        f"gpus = {_toml_str(cfg.gpus)}",
     ]
     return "\n".join(lines) + "\n"
 
