@@ -26,7 +26,8 @@ PROJECT_CONFIG_NAME = ".scribe-md.toml"
 
 DEFAULT_CONFIG_TOML = """\
 [defaults]
-model = "large-v3"        # or full HF path
+engine = ""               # empty = auto; mlx|qwen|whispercpp|nemotron
+model = "large-v3"        # Whisper/Qwen preset or full HF path
 language = ""             # auto-detect when empty
 timestamps = true
 timestamp_mode = "segment" # segment, paragraph, minute, or none
@@ -55,6 +56,15 @@ incremental = true        # live mode defaults to incremental output
 
 [gpu]
 gpus = ""                 # "", "1", "auto", "N", or "0,1" (same as --gpus)
+
+[qwen]
+model = "mlx-community/Qwen3-ASR-1.7B-8bit"  # macOS MLX Qwen3-ASR weights
+
+[nemotron]
+base_url = "http://127.0.0.1:8000/v1"
+model = "nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B"
+prompt = "Audio transcription. Language: as spoken. Wording: omit fillers and accidental repetitions; keep the remaining spoken wording unchanged. Formatting: punctuation and capitalization. Output: transcript only."
+timeout_seconds = 600
 """
 
 
@@ -63,6 +73,7 @@ class ScribeMdConfig:
     """Resolved configuration for scribe-md."""
 
     # [defaults]
+    engine: str = ""  # empty = auto; mlx|qwen|whispercpp|nemotron
     model: str = "large-v3"
     language: str = ""
     timestamps: bool = True
@@ -93,6 +104,19 @@ class ScribeMdConfig:
     # [gpu]
     gpus: str = ""  # "", "1", "auto", "N", or "0,1" — same grammar as --gpus
 
+    # [qwen]
+    qwen_model: str = "mlx-community/Qwen3-ASR-1.7B-8bit"
+
+    # [nemotron]
+    nemotron_base_url: str = "http://127.0.0.1:8000/v1"
+    nemotron_model: str = "nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B"
+    nemotron_prompt: str = (
+        "Audio transcription. Language: as spoken. Wording: omit fillers and "
+        "accidental repetitions; keep the remaining spoken wording unchanged. "
+        "Formatting: punctuation and capitalization. Output: transcript only."
+    )
+    nemotron_timeout_seconds: float = 600.0
+
     # Metadata — which files contributed to this config
     _sources: list[str] = field(default_factory=list, repr=False)
 
@@ -119,6 +143,8 @@ def _apply_toml(cfg: ScribeMdConfig, data: dict, source: str) -> None:
     obsidian = data.get("obsidian", {})
     live = data.get("live", {})
 
+    if "engine" in defaults:
+        cfg.engine = str(defaults["engine"])
     if "model" in defaults:
         cfg.model = str(defaults["model"])
     if "language" in defaults:
@@ -164,6 +190,20 @@ def _apply_toml(cfg: ScribeMdConfig, data: dict, source: str) -> None:
     gpu = data.get("gpu", {})
     if "gpus" in gpu:
         cfg.gpus = str(gpu["gpus"])
+
+    qwen = data.get("qwen", {})
+    if "model" in qwen:
+        cfg.qwen_model = str(qwen["model"])
+
+    nemotron = data.get("nemotron", {})
+    if "base_url" in nemotron:
+        cfg.nemotron_base_url = str(nemotron["base_url"])
+    if "model" in nemotron:
+        cfg.nemotron_model = str(nemotron["model"])
+    if "prompt" in nemotron:
+        cfg.nemotron_prompt = str(nemotron["prompt"])
+    if "timeout_seconds" in nemotron:
+        cfg.nemotron_timeout_seconds = float(nemotron["timeout_seconds"])
 
     cfg._sources.append(source)
 
@@ -230,6 +270,7 @@ def config_as_toml(cfg: ScribeMdConfig) -> str:
     """
     lines = [
         "[defaults]",
+        f"engine = {_toml_str(cfg.engine)}",
         f"model = {_toml_str(cfg.model)}",
         f"language = {_toml_str(cfg.language)}",
         f"timestamps = {'true' if cfg.timestamps else 'false'}",
@@ -259,6 +300,15 @@ def config_as_toml(cfg: ScribeMdConfig) -> str:
         "",
         "[gpu]",
         f"gpus = {_toml_str(cfg.gpus)}",
+        "",
+        "[qwen]",
+        f"model = {_toml_str(cfg.qwen_model)}",
+        "",
+        "[nemotron]",
+        f"base_url = {_toml_str(cfg.nemotron_base_url)}",
+        f"model = {_toml_str(cfg.nemotron_model)}",
+        f"prompt = {_toml_str(cfg.nemotron_prompt)}",
+        f"timeout_seconds = {cfg.nemotron_timeout_seconds}",
     ]
     return "\n".join(lines) + "\n"
 

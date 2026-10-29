@@ -71,6 +71,10 @@ _FromFile = Annotated[Optional[Path], typer.Option(
 _Gpus = Annotated[Optional[str], typer.Option(
     "--gpus", help="GPUs for parallel transcription: 'auto', N, or '0,1' (CUDA only)",
 )]
+_Engine = Annotated[Optional[str], typer.Option(
+    "--engine",
+    help="Transcription engine: mlx, qwen, whispercpp, nemotron (default: auto)",
+)]
 
 # ---------------------------------------------------------------------------
 # Config subcommand group
@@ -122,6 +126,21 @@ def config_init() -> None:
 def _resolve(cli_value, config_value):
     """Return cli_value if it is not None, otherwise config_value."""
     return cli_value if cli_value is not None else config_value
+
+
+def _apply_engine_runtime(cfg: ScribeMdConfig, engine: str | None) -> None:
+    """Publish engine + Qwen/Nemotron settings for ``get_backend()``."""
+    import os
+
+    chosen = (engine if engine is not None else cfg.engine) or ""
+    chosen = chosen.strip()
+    if chosen:
+        os.environ["SCRIBE_MD_BACKEND"] = chosen
+    os.environ["SCRIBE_MD_QWEN_MODEL"] = cfg.qwen_model
+    os.environ["SCRIBE_MD_NEMOTRON_URL"] = cfg.nemotron_base_url
+    os.environ["SCRIBE_MD_NEMOTRON_MODEL"] = cfg.nemotron_model
+    os.environ["SCRIBE_MD_NEMOTRON_PROMPT"] = cfg.nemotron_prompt
+    os.environ["SCRIBE_MD_NEMOTRON_TIMEOUT"] = str(cfg.nemotron_timeout_seconds)
 
 
 def _resolve_language(cli_value: str | None, cfg: ScribeMdConfig) -> str | None:
@@ -738,6 +757,7 @@ def file(
     audio_files: list[Path] = typer.Argument(None, help="Audio file(s) (WAV, MP3, ...)"),
     from_file: _FromFile = None,
     gpus: _Gpus = None,
+    engine: _Engine = None,
     output: _Output = None,
     language: _Language = None,
     model: _Model = None,
@@ -775,6 +795,7 @@ def file(
             raise typer.Exit(1)
 
     cfg = load_config()
+    _apply_engine_runtime(cfg, engine)
     opts = _resolve_common_options(
         cfg, model=model, language=language, timestamps=timestamps,
         timestamp_mode=timestamp_mode, paragraph_gap=paragraph_gap,
@@ -816,6 +837,9 @@ def file(
         else:
             console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -828,6 +852,7 @@ def url(
     urls: list[str] = typer.Argument(None, help="YouTube URL(s) or playlist URL(s)"),
     from_file: _FromFile = None,
     gpus: _Gpus = None,
+    engine: _Engine = None,
     output: _Output = None,
     language: _Language = None,
     model: _Model = None,
@@ -857,6 +882,7 @@ def url(
     inputs = _collect_inputs(list(urls or []), from_file)
     _validate_single_output(inputs, output)
     cfg = load_config()
+    _apply_engine_runtime(cfg, engine)
     opts = _resolve_common_options(
         cfg, model=model, language=language, timestamps=timestamps,
         timestamp_mode=timestamp_mode, paragraph_gap=paragraph_gap,
@@ -1226,6 +1252,7 @@ def _transcribe_url(
 def live(
     output: _Output = None,
     duration: Optional[float] = typer.Option(None, "--duration", "-d", help="Recording duration (seconds)"),
+    engine: _Engine = None,
     language: _Language = None,
     model: _Model = None,
     timestamps: _Timestamps = None,
@@ -1259,6 +1286,7 @@ def live(
         )
         raise typer.Exit(1)
     cfg = load_config()
+    _apply_engine_runtime(cfg, engine)
     opts = _resolve_common_options(
         cfg, model=model, language=language, timestamps=timestamps,
         timestamp_mode=timestamp_mode, paragraph_gap=paragraph_gap,
@@ -1578,13 +1606,22 @@ def _live_chunked(
 
 @app.command("list-models")
 def list_models() -> None:
-    """List available Whisper model presets."""
+    """List available Whisper model presets and engine notes."""
+    console.print("[bold]Engines[/bold] (--engine / [defaults].engine / SCRIBE_MD_BACKEND)")
+    console.print("  mlx         Whisper via mlx-whisper (macOS default)")
+    console.print("  qwen        Qwen3-ASR via mlx-audio (macOS; optional)")
+    console.print("  whispercpp  whisper.cpp (Linux default when Nemotron unavailable)")
+    console.print("  nemotron    Nemotron 3.5 Transcribe via local vLLM (Linux CUDA default when server is up)")
+    console.print("")
+    console.print("[bold]Whisper presets[/bold] (--model)")
     console.print(f"{'Preset':<20} HF Repo Path")
     console.print(f"{'─' * 20} {'─' * 50}")
     for name, path in MODEL_PRESETS.items():
         marker = " *" if name == DEFAULT_MODEL else ""
         console.print(f"{name:<20} {path}{marker}")
-    console.print(f"\n[dim]* = default model ({DEFAULT_MODEL})[/dim]")
+    console.print(f"\n[dim]* = default Whisper model ({DEFAULT_MODEL})[/dim]")
+    console.print("[dim]Qwen presets: qwen / qwen-1.7b / qwen-0.6b (or a full mlx-community repo)[/dim]")
+    console.print("[dim]Nemotron served model id comes from [nemotron].model, not --model[/dim]")
 
 
 @app.command("list-apps")
