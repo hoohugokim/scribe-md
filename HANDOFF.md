@@ -1,28 +1,27 @@
 <!-- statutor: plane=state | policy=overwrite_bounded (max 40 lines) | writer=executor | OVERWRITE, NEVER APPEND -->
 # HANDOFF
 
-last_verified: 2026-10-27 by `git rev-parse --short HEAD` (b6ac671) and `git status -sb`
-last_worker: grok
-last_machine: 1befd044f2ccc95033f353b2b7468adc
-handoff_id: bf7766637d0547f375f8a9ed93f320e7
-supersedes: e27b3164c1b0f68c3d67b1c24c8884b5
+last_verified: 2026-10-29 by `pixi run pytest -q` (259 passed) on cursor/qwen-nemotron-engines-77b7
+last_worker: composer
+last_machine: cloud-agent
+handoff_id: qwen-nemotron-77b7
+supersedes: bf7766637d0547f375f8a9ed93f320e7
 
 ## Goal
-Keep main free of a fixed product milestone. The TUI is an experiment on explore/tui (D-0004).
+Land Qwen3-ASR (macOS) and Nemotron 3.5 Transcribe (Linux CUDA default-when-available) engines (D-0005).
 
 ## Last verified state
-- main is b6ac671, pushed, with the live-chunk timestamp fix. pytest was 240 passed before that push.
-- D-0004 supersedes D-0003's milestone claim. T-0002 is off the main queue. T-0001 remains.
-- The TUI design lives only on explore/tui. main does not contain it.
+- Branch cursor/qwen-nemotron-engines-77b7: backends qwen/nemotron/segments, --engine, config, docs, D-0005.
+- Auto policy: macOS mlx; Linux nemotron if CUDA + /v1/models healthy else whispercpp.
+- pytest 259 passed (stubbed; no live vLLM / mlx-audio inference in CI).
 
 ## Next action
-On explore/tui, read docs/superpowers/specs/2026-10-27-tui-explore.md and try the job seam before any widget. On main, do not start that work.
+Review/merge the PR. Optional follow-ups: live Nemotron smoke on H100, mlx-audio install path in pixi, Qwen as optional Mac default.
 
 ## Gotchas
-- D-0002 still holds: explore/tui is short-lived, not a second long-lived branch.
-- The pipeline still prints and raises typer.Exit. Live SIGINT is process-global.
+- Nemotron is client-only; user must run vLLM + NeMo Speech separately.
+- --gpus remains whisper.cpp CUDA-only.
 - Do not commit pixi.lock drift, repo-root media, or whisper.cpp pycache.
-- bash_guard blocks shell writes to governed files.
 
 ## Do not touch
 vendor/whisper.cpp/, capture/.build/, output/, plans/archive/, and the untracked media files in the repo root.
