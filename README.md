@@ -1,8 +1,8 @@
 # scribe-md
 
-Transcribe system audio, audio files, and YouTube videos to Markdown -- fully local on Apple Silicon.
+Transcribe system audio, audio files, and YouTube videos to Markdown -- fully local.
 
-Uses [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper) for fast, on-device transcription with no cloud dependencies.
+**Engines:** [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper) (macOS default), optional [Qwen3-ASR](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-8bit) on Apple Silicon, [whisper.cpp](https://github.com/ggerganov/whisper.cpp) on Linux, and [Nemotron 3.5 Transcribe](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B) as the Linux CUDA default when a local vLLM server is up.
 
 ## Requirements
 
@@ -90,9 +90,29 @@ scribe-md live --chunk-seconds 300 --overlap-seconds 5
 
 The first time you run `live`, macOS will ask for screen recording permission (required by ScreenCaptureKit for audio capture).
 
+### Transcription engines
+
+| Engine | Platform | When selected |
+|--------|----------|---------------|
+| `mlx` | macOS | Auto default (Whisper via mlx-whisper) |
+| `qwen` | macOS | `--engine qwen` — Qwen3-ASR 1.7B via `mlx-audio` |
+| `whispercpp` | Linux | Auto when Nemotron is unavailable |
+| `nemotron` | Linux + NVIDIA | Auto when CUDA is present **and** a local Nemotron vLLM server answers `/v1/models` |
+
+```bash
+# macOS: optional higher-accuracy Qwen3-ASR (install mlx-audio first)
+pixi run pip install 'mlx-audio'
+pixi run scribe-md file talk.wav --engine qwen -l ko
+
+# Linux CUDA: Nemotron when the local server is up (see docs/LINUX.md)
+pixi run scribe-md file talk.wav --engine nemotron
+```
+
+Override via `--engine`, `[defaults] engine` in config, or `SCRIBE_MD_BACKEND`.
+
 ### `scribe-md list-models`
 
-Show available Whisper model presets:
+Show engines and Whisper model presets:
 
 ```
 Preset               HF Repo Path
@@ -130,7 +150,8 @@ These options are available on `file`, `url`, and `live`:
 |--------|-------|-------------|
 | `--output` | `-o` | Output Markdown file path |
 | `--language` | `-l` | Language code (`en`, `ko`, `ja`, etc.). Auto-detected if omitted |
-| `--model` | `-m` | Whisper model preset or full HuggingFace repo path |
+| `--engine` | | Transcription engine: `mlx`, `qwen`, `whispercpp`, `nemotron` (default: auto) |
+| `--model` | `-m` | Whisper/Qwen model preset or full HuggingFace repo path |
 | `--timestamps` / `--no-timestamps` | `-t` / `-T` | Include timestamps (default: on) |
 | `--timestamp-mode` | | `segment`, `paragraph`, `minute`, or `none` |
 | `--paragraph-gap` | | Seconds of silence to trigger a paragraph break (default: 2.0) |

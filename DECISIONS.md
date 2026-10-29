@@ -25,3 +25,9 @@
 **Context:** D-0003 fixed the TUI as the milestone on main. We want to try that design without making it the committed product path.
 **Decision:** Explore the TUI on the short-lived branch `explore/tui`. main has no fixed product milestone. D-0002 still holds: main is the only long-lived branch. The one-job seam in D-0003 still applies inside the experiment.
 **Consequences:** T-0002 is not on the main queue. CUDA smoke stays T-0001. Merging or deleting `explore/tui` is a later decision.
+
+## D-0005 — Qwen3-ASR and Nemotron 3.5 Transcribe as selectable engines
+**Status:** accepted
+**Context:** Nemotron 3.5 Transcribe pushed the open-weight ASR Pareto frontier (~4.3B active) but is NVIDIA CUDA-only. Qwen3-ASR 1.7B is a stronger optional Mac MLX path for KO/CJK without replacing Whisper’s language breadth.
+**Decision:** Keep one engine per job. Auto: macOS → mlx Whisper; Linux → Nemotron when CUDA is present and a local vLLM Nemotron server is healthy, else whisper.cpp. Qwen is first-class on macOS via `--engine qwen` (not the auto default). Nemotron is a client to an externally managed OpenAI-compatible server.
+**Consequences:** `--engine` / `[defaults].engine` / `SCRIBE_MD_BACKEND` accept `mlx|qwen|whispercpp|nemotron`. `--gpus` stays whisper.cpp-only. In-process Transformers/GGUF Nemotron and making Qwen the Mac auto-default are deferred.

@@ -1,7 +1,7 @@
 <!-- statutor: plane=constitution | policy=constitution | writer=human | budget: soft 120 / hard 200 lines -->
 # AGENTS.md
 
-> scribe-md: local transcription of system audio / files / YouTube to Markdown — mlx-whisper on Apple Silicon, whisper.cpp on Linux (Vulkan/CUDA/CPU). Fully offline. Pixi is the only env manager.
+> scribe-md: local transcription of system audio / files / YouTube to Markdown — mlx-whisper (default) or Qwen3-ASR on Apple Silicon; whisper.cpp or Nemotron 3.5 Transcribe (CUDA default-when-available) on Linux. Fully offline (Nemotron talks to a local vLLM). Pixi is the only env manager.
 
 ## Commands
 - Build (macOS): `pixi run build-capture` — Swift ScreenCaptureKit binary in `capture/`
@@ -11,8 +11,8 @@
 - Lint: no dedicated task; `pixi run python -m py_compile scribe_md/*.py` smoke check
 
 ## Conventions that differ from defaults
-- Pixi only. `pixi install` provisions ffmpeg+python; never `pip install` outside pixi except optional `pyannote-audio`/`mlx-lm`.
-- Backend selection via `platform_support.py` + `scribe_md/backends/` protocol; override with `SCRIBE_MD_BACKEND`.
+- Pixi only. `pixi install` provisions ffmpeg+python; never `pip install` outside pixi except optional `pyannote-audio`/`mlx-lm`/`mlx-audio`.
+- Backend selection via `platform_support.py` + `scribe_md/backends/` protocol; override with `--engine` / `[defaults].engine` / `SCRIBE_MD_BACKEND` (`mlx|qwen|whispercpp|nemotron`).
 - Config layered: CLI flags > `.scribe-md.toml` (project) > `~/.config/scribe-md/config.toml` (user) > defaults in `config.py`.
 - Long audio chunked by default: `audio.py` ffmpeg split + `merger.py` overlap dedup; `--incremental` writes interim output.
 - Obsidian output via `obsidian.py`: vault-relative paths, YAML frontmatter, `--daily-note` append.

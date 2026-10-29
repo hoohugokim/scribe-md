@@ -30,6 +30,35 @@ ships no CUDA toolkit, a plain `pixi install` lands on Vulkan. Force a choice wi
   `SCRIBE_MD_WHISPER_ACCEL=cuda pixi run build-whisper`.
 - Confirm the device in use: scribe-md logs `Transcribing ... via whisper.cpp (vulkan)`.
 
+## Nemotron 3.5 Transcribe (Linux CUDA default-when-available)
+
+When `nvidia-smi` lists a GPU **and** a local OpenAI-compatible Nemotron server
+is healthy at `http://127.0.0.1:8000/v1`, scribe-md auto-selects
+`--engine nemotron`. Otherwise it falls back to whisper.cpp.
+
+scribe-md is a **client only** — start the server yourself with
+[vLLM 0.32+](https://docs.vllm.ai/) and
+[NeMo Speech](https://github.com/NVIDIA-NeMo/Speech) per the
+[model card](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B).
+BF16 serving targets roughly one H100 80 GB; FP8/NVFP4 variants reduce VRAM.
+
+```bash
+# Force Nemotron (errors if the server is down):
+pixi run scribe-md file recording.wav --engine nemotron
+
+# Force whisper.cpp even when Nemotron is up:
+pixi run scribe-md file recording.wav --engine whispercpp
+```
+
+Config (`~/.config/scribe-md/config.toml`):
+
+```toml
+[nemotron]
+base_url = "http://127.0.0.1:8000/v1"
+model = "nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B"
+timeout_seconds = 600
+```
+
 ## Benchmark (Vulkan vs CPU)
 
 Time a fixed clip on each accelerator to get real numbers on your hardware:
